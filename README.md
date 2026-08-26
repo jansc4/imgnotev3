@@ -21,4 +21,4 @@ Python backend (pywebview, PyQt6, `cryptography` for AES-GCM/Scrypt, PyMuPDF/pyt
 
 ## Status
 
-Personal project, actively developed (currently mid-migration from a PyQt6 GUI to this pywebview one — see `MIGRATION_PLAN.md` for the in-progress plan and design decisions).
+Personal project, actively developed. Started as a PyQt6 GUI and was migrated over to this pywebview-based one — that migration is essentially finished now.
