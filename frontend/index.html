@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+  <meta charset="UTF-8">
+  <title>ImgNote v3</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <!-- Core: stan, router, wrapper wywołań js_api -->
+  <script src="core.js"></script>
+  <!-- Widoki (kolejność ładowania = kolejność Etapu 4 w planie) -->
+  <script src="views/login.js"></script>
+  <script src="views/gallery.js"></script>
+  <script src="views/editor.js"></script>
+  <script src="views/viewer.js"></script>
+  <script src="views/tag_manager.js"></script>
+
+  <script src="app.js"></script>
+</body>
+</html>
