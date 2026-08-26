@@ -8,6 +8,12 @@ Lokalny, szyfrowany menedżer notatek dla obrazów i dokumentów, które muszą 
 
 Rzeczy tego typu zwykle kończą jako nieprzeszukiwalna sterta zaszyfrowanych archiwów, albo w ogóle bez szyfrowania, "bo nikt nie zajrzy". Tu każdy element jest szyfrowany osobno, ale wciąż tagowalny, przeszukiwalny i przeglądalny przez zwykłą aplikację.
 
+## Zrzuty ekranu
+
+| Logowanie | Galeria |
+|---|---|
+| ![Ekran hasła](docs/screenshot-login.png) | ![Widok galerii](docs/screenshot-main.png) |
+
 ## Jak to działa
 
 - Każdy element zapisywany jest jako pojedynczy plik `.imgnote` — własny format binarny (nagłówek `IMNG`) przechowujący obraz, notatkę tekstową i tagi, szyfrowany **AES-GCM** z kluczem wyprowadzonym z hasła przez **Scrypt**. Nic nie jest zapisywane ani przesyłane bez szyfrowania.

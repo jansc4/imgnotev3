@@ -8,6 +8,12 @@ A local, encrypted note manager for images and documents that need to stay prote
 
 Most of what you'd otherwise store this way ends up as an unsearchable pile of encrypted archives, or unencrypted and just hoping no one looks. This keeps every item individually encrypted, but still taggable, searchable, and viewable through a normal app.
 
+## Screenshots
+
+| Login | Gallery |
+|---|---|
+| ![Password screen](docs/screenshot-login.png) | ![Main gallery view](docs/screenshot-main.png) |
+
 ## How it works
 
 - Each item is saved as a single `.imgnote` file — a custom binary format (`IMNG` header) storing the image, a text note, and tags, encrypted with **AES-GCM** using a key derived from your password via **Scrypt**. Nothing is stored or transmitted unencrypted.
