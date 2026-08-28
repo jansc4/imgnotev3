@@ -19,7 +19,10 @@ registerView("gallery", async function (container) {
       <div id="breadcrumb-bar" class="breadcrumb-bar"></div>
       <div class="search-bar">
         <label class="search-label">🏷 Tagi:</label>
-        <input id="search-tag" class="search-input" placeholder="projekt AND ważne | a OR b | x NOT archiwum">
+        <div class="search-tag-wrap">
+          <input id="search-tag" class="search-input" placeholder="projekt AND ważne | a OR b | x NOT archiwum" autocomplete="off">
+          <div id="search-tag-autocomplete" class="tag-autocomplete search-tag-autocomplete" hidden></div>
+        </div>
         <label class="search-label">🔤 Tekst:</label>
         <input id="search-text" class="search-input" placeholder='"fraza dokładna" lub słowo1, słowo2'>
         <button id="btn-clear-search" class="btn btn-icon" title="Wyczyść wyszukiwanie">✕</button>
@@ -457,6 +460,70 @@ function debouncedSearch() {
   _searchDebounce = setTimeout(onSearchChanged, 300);
 }
 
+// ── Podpowiedzi tagów w #search-tag (krok 8, punkt 15) ────────────────
+//
+// W przeciwieństwie do edytora (jedno płaskie pole = jeden tag) to pole
+// niesie całą gramatykę zapytania (AND/OR/NOT, nawiasy) — podpowiedź musi
+// patrzeć na TOKEN pod kursorem, nie na całą wartość pola. Granice tokenu
+// (spacja, "(", ")") muszą się zgadzać z _tokenize_tags() w
+// backendV4/search_engine.py, inaczej podpowiedź podmieniałaby coś innego
+// niż to, co backend faktycznie sparsuje jako jedno słowo.
+
+function _searchTagTokenBounds(input) {
+  const value = input.value;
+  const caret = input.selectionStart ?? value.length;
+  const before = value.slice(0, caret);
+  const tokenText = (before.match(/[^\s()]*$/) || [""])[0];
+  return { start: caret - tokenText.length, end: caret, text: tokenText };
+}
+
+function updateSearchTagAutocomplete() {
+  const input = document.getElementById("search-tag");
+  const dropdown = document.getElementById("search-tag-autocomplete");
+  const { text } = _searchTagTokenBounds(input);
+  const q = text.trim().toLowerCase();
+  if (!q) {
+    hideSearchTagAutocomplete();
+    return;
+  }
+  const matches = (AppState.knownTags || [])
+    .filter((t) => t.toLowerCase().includes(q))
+    .slice(0, 10);
+  if (matches.length === 0) {
+    hideSearchTagAutocomplete();
+    return;
+  }
+  dropdown.innerHTML = matches
+    .map((t) => `<div class="tag-autocomplete-item" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</div>`)
+    .join("");
+  dropdown.hidden = false;
+  dropdown.querySelectorAll(".tag-autocomplete-item").forEach((item) => {
+    // mousedown (nie click) — żeby zdążyć zanim input straci focus i schowa dropdown
+    item.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      applySearchTagSuggestion(input, item.dataset.tag);
+      hideSearchTagAutocomplete();
+      debouncedSearch();
+    });
+  });
+}
+
+function applySearchTagSuggestion(input, tag) {
+  const { start, end } = _searchTagTokenBounds(input);
+  const before = input.value.slice(0, start);
+  const after = input.value.slice(end);
+  const insertion = tag + " ";
+  input.value = before + insertion + after;
+  input.focus();
+  const newCaret = before.length + insertion.length;
+  input.setSelectionRange(newCaret, newCaret);
+}
+
+function hideSearchTagAutocomplete() {
+  const dropdown = document.getElementById("search-tag-autocomplete");
+  if (dropdown) dropdown.hidden = true;
+}
+
 // ── Toolbar: foldery, tagi, nowa notatka ─────────────────────────────
 
 function wireGalleryEvents() {
@@ -521,10 +588,17 @@ function wireGalleryEvents() {
     showView("editor", AppState.currentFolder, null);
   });
 
-  document.getElementById("search-tag").addEventListener("input", debouncedSearch);
+  document.getElementById("search-tag").addEventListener("input", () => {
+    debouncedSearch();
+    updateSearchTagAutocomplete();
+  });
+  document.getElementById("search-tag").addEventListener("blur", () => {
+    setTimeout(hideSearchTagAutocomplete, 150);
+  });
   document.getElementById("search-text").addEventListener("input", debouncedSearch);
   document.getElementById("btn-clear-search").addEventListener("click", async () => {
     clearSearchInputs();
+    hideSearchTagAutocomplete();
     toggleHomeSortBar(AppState.currentFolder === HOME_SENTINEL);
     if (AppState.currentFolder === HOME_SENTINEL) await showHomeNotes();
     else if (AppState.currentFolder) await showFolderNotes(AppState.currentFolder);

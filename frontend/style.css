@@ -111,9 +111,20 @@ body {
   border: 1px solid var(--border);
   border-radius: 4px;
   padding: 3px 8px;
+  box-sizing: border-box;
 }
 .search-input:focus { border-color: var(--accent); outline: none; }
 .search-status { color: #66bb6a; font-size: 11px; min-width: 100px; }
+/* Kontener podpowiedzi tagów w #search-tag (krok 8, punkt 15) — position:
+   relative TYLKO wokół samego pola (nie całego .search-bar), żeby
+   dropdown wisiał dokładnie pod nim, nie pod całym paskiem. */
+.search-tag-wrap { position: relative; flex: 1; }
+.search-tag-wrap .search-input { width: 100%; }
+/* .tag-autocomplete (editor.js) ma right:90px dopasowane pod przyciski
+   +Dodaj/-Usuń obok pola — tu nie ma takich sąsiadów, więc pełna szerokość.
+   Podwójny selektor klasy (nie tylko .search-tag-autocomplete) — wyższa
+   specyficzność, niezależna od tego, która reguła jest niżej w pliku. */
+.tag-autocomplete.search-tag-autocomplete { top: 32px; right: 0; }
 
 /* === Breadcrumb (ścieżka w headerze) === */
 .breadcrumb-bar {
