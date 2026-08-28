@@ -114,11 +114,14 @@ async function deleteFolderWithConfirm(path) {
     : `Folder "${name}" jest pusty. Usunąć go?`;
   if (!confirm(msg)) return;
 
+  showProgressModal("Usuwam folder…");
   try {
     await callApi("delete_folder", path);
   } catch (err) {
     alert("Błąd usuwania folderu: " + err);
     return;
+  } finally {
+    hideProgressModal();
   }
   if (AppState.currentFolder === path || AppState.currentFolder.startsWith(path + "/")) {
     await selectFolder(HOME_SENTINEL);
@@ -503,7 +506,7 @@ function wireGalleryEvents() {
   });
 
   document.getElementById("btn-manage-tags").addEventListener("click", () => {
-    showView("tag_manager");
+    openTagManagerPopup();
   });
 
   document.getElementById("btn-settings").addEventListener("click", () => {

@@ -569,9 +569,9 @@ body.viewer-resizing .viewer-splitter::after { background: var(--accent); }
   font-size: 12px;
 }
 
-/* === Tag Manager === */
-.tag-manager { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
-.tm-body { display: flex; flex-direction: column; gap: 8px; padding: 14px; max-width: 540px; flex: 1; overflow-y: auto; box-sizing: border-box; }
+/* === Tag Manager (krok 8, punkt 12: teraz popup, nie pełnoekranowy === */
+/* widok — .tag-manager wrapper zbędny, .popup-body już skaluje/scrolluje). */
+.tm-body { display: flex; flex-direction: column; gap: 8px; max-width: 540px; box-sizing: border-box; }
 .tm-list {
   height: 320px;
   overflow-y: auto;
