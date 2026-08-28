@@ -23,12 +23,13 @@
   <!-- Generyczny popup (krok 8, punkt 3) - jeden trwały kontener poza
        #app, współistnieje z #progress-modal (np. Tag Manager w popupie +
        bulk-akcja z paskiem postępu naraz). -->
-  <div id="popup-root" class="popup-modal" hidden></div>
+  <div id="popup-root" hidden></div>
 
   <!-- Core: stan, router, wrapper wywołań js_api -->
   <script src="core.js"></script>
   <script src="progress_modal.js"></script>
   <script src="popup.js"></script>
+  <script src="context_menu.js"></script>
   <script src="settings.js"></script>
   <!-- Widoki (kolejność ładowania = kolejność Etapu 4 w planie) -->
   <script src="views/login.js"></script>

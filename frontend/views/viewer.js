@@ -1,11 +1,17 @@
 /**
- * views/viewer.js — odpowiednik v2 viewer_page.py (MVP: bez zoom/pan obrazu,
- * bez eksportu do PNG/MD — oznaczone jako TODO w planie migracji).
+ * views/viewer.js — odpowiednik v2 viewer_page.py (MVP: bez eksportu do
+ * PNG/MD — oznaczone jako TODO w planie migracji).
+ *
+ * Krok 8 (runda folder rename/move, 2026-08-28): przerobione na popup —
+ * spójność stylu z resztą nakładek (Tag Manager, Ustawienia, Editor) i
+ * rozwiązuje "problem powrotu": Editor otwierany z Viewera (Edytuj
+ * metadane) leży teraz NAD nim (prawdziwy stos w popup.js), więc
+ * zamknięcie Edytora naturalnie wraca do Viewera, zamiast zawsze lądować
+ * w Galerii. Zniknęło "← Wróć" — zamykanie to ✕/Escape/klik w tło.
  */
 
 let _viewerFiles = [];
 let _viewerIdx = 0;
-let _viewerFolder = "";
 let _viewerEditMode = false;
 let _viewerCurrentText = "";
 let _viewerSplitRatio = 0.5;      // udział panelu obrazu w szerokości (0.15–0.85), trzyma się między notatkami
@@ -15,64 +21,79 @@ let _viewerPanX = 0;
 let _viewerPanY = 0;
 let _viewerPanHandlers = null;    // { move, up } — do odpięcia przy ponownym wejściu w viewer
 let _viewerKeydownHandler = null; // do odpięcia przy ponownym wejściu w viewer
+// Zastępuje dawny _currentView !== "viewer" — popup nie ustawia _currentView
+// z core.js (widok pod spodem zostaje aktywny), więc guard w nawigacji
+// klawiaturą potrzebuje własnej flagi cyklu życia popupu (ten sam wzorzec
+// co _editorPopupOpen w editor.js).
+let _viewerPopupOpen = false;
 const ZOOM_MIN = 0.15;
 const ZOOM_MAX = 10;
 const ZOOM_STEP = 1.25;
 
-registerView("viewer", async function (container, folder, filepath) {
-  _viewerFolder = folder;
-  _viewerFiles = await callApi("collect_viewer_files", folder);
-  if (_viewerFiles.length === 0) _viewerFiles = [{ filepath, title: "", folder }];
-  _viewerIdx = Math.max(0, _viewerFiles.findIndex((f) => f.filepath === filepath));
-  _viewerEditMode = false;
+function openViewerPopup(folder, filepath) {
+  _viewerPopupOpen = true;
 
-  container.innerHTML = `
-    <div class="viewer">
-      <div class="toolbar">
-        <button id="v-back" class="btn">← Wróć</button>
-        <span id="v-title" class="app-title"></span>
-        <span id="v-counter" class="viewer-counter"></span>
-        <div class="toolbar-spacer"></div>
-        <button id="v-toggle-edit" class="btn">✏️ Edytuj</button>
-        <button id="v-edit-meta" class="btn">⚙️ Edytuj metadane</button>
-        <button id="v-delete" class="btn">🗑️ Usuń</button>
-      </div>
-      <div class="viewer-body">
-        <div id="v-file-list" class="viewer-file-list"></div>
-        <div class="viewer-content" id="v-content">
-          <div id="v-image" class="viewer-image">
-            <div id="v-image-viewport" class="viewer-image-viewport"></div>
-            <div class="viewer-zoom-controls">
-              <button id="v-zoom-out" class="btn btn-icon" title="Pomniejsz">−</button>
-              <span id="v-zoom-label" class="viewer-zoom-label">100%</span>
-              <button id="v-zoom-in" class="btn btn-icon" title="Powiększ">+</button>
-              <button id="v-zoom-reset" class="btn btn-icon" title="Resetuj widok">⤢</button>
+  openPopup({
+    title: "Podgląd notatki",
+    wide: true,
+    onClose: () => {
+      _viewerPopupOpen = false;
+    },
+    async render(container) {
+      _viewerFiles = await callApi("collect_viewer_files", folder);
+      if (_viewerFiles.length === 0) _viewerFiles = [{ filepath, title: "", folder }];
+      _viewerIdx = Math.max(0, _viewerFiles.findIndex((f) => f.filepath === filepath));
+      _viewerEditMode = false;
+
+      container.innerHTML = `
+        <div class="viewer">
+          <div class="toolbar">
+            <span id="v-title" class="app-title"></span>
+            <span id="v-counter" class="viewer-counter"></span>
+            <div class="toolbar-spacer"></div>
+            <button id="v-toggle-edit" class="btn">✏️ Edytuj</button>
+            <button id="v-edit-meta" class="btn">⚙️ Edytuj metadane</button>
+            <button id="v-delete" class="btn">🗑️ Usuń</button>
+          </div>
+          <div class="viewer-body">
+            <div id="v-file-list" class="viewer-file-list"></div>
+            <div class="viewer-content" id="v-content">
+              <div id="v-image" class="viewer-image">
+                <div id="v-image-viewport" class="viewer-image-viewport"></div>
+                <div class="viewer-zoom-controls">
+                  <button id="v-zoom-out" class="btn btn-icon" title="Pomniejsz">−</button>
+                  <span id="v-zoom-label" class="viewer-zoom-label">100%</span>
+                  <button id="v-zoom-in" class="btn btn-icon" title="Powiększ">+</button>
+                  <button id="v-zoom-reset" class="btn btn-icon" title="Resetuj widok">⤢</button>
+                </div>
+              </div>
+              <div id="v-splitter" class="viewer-splitter" title="Przeciągnij, by zmienić proporcje"></div>
+              <div class="viewer-text-panel">
+                <div id="v-md-view" class="viewer-md-view"></div>
+                <textarea id="v-md-editor" class="editor-textarea" style="display:none"></textarea>
+                <div id="v-save-bar" class="viewer-save-bar" style="display:none">
+                  <button id="v-save-inline" class="btn btn-primary">💾 Zapisz zmiany</button>
+                  <button id="v-discard" class="btn">✕ Anuluj</button>
+                </div>
+              </div>
+              <button id="v-prev" class="btn viewer-nav-btn viewer-nav-prev" title="Poprzedni (←)">◀</button>
+              <button id="v-next" class="btn viewer-nav-btn viewer-nav-next" title="Następny (→)">▶</button>
             </div>
           </div>
-          <div id="v-splitter" class="viewer-splitter" title="Przeciągnij, by zmienić proporcje"></div>
-          <div class="viewer-text-panel">
-            <div id="v-md-view" class="viewer-md-view"></div>
-            <textarea id="v-md-editor" class="editor-textarea" style="display:none"></textarea>
-            <div id="v-save-bar" class="viewer-save-bar" style="display:none">
-              <button id="v-save-inline" class="btn btn-primary">💾 Zapisz zmiany</button>
-              <button id="v-discard" class="btn">✕ Anuluj</button>
-            </div>
-          </div>
-          <button id="v-prev" class="btn viewer-nav-btn viewer-nav-prev" title="Poprzedni (←)">◀</button>
-          <button id="v-next" class="btn viewer-nav-btn viewer-nav-next" title="Następny (→)">▶</button>
+          <div id="v-tags" class="viewer-tags-row"></div>
         </div>
-      </div>
-      <div id="v-tags" class="viewer-tags-row"></div>
-    </div>
-  `;
+      `;
 
-  wireViewerEvents();
-  renderFileList();
-  await loadCurrentNote();
-});
+      wireViewerEvents();
+      renderFileList();
+      await loadCurrentNote();
+    },
+  });
+}
 
 function renderFileList() {
   const el = document.getElementById("v-file-list");
+  if (!el) return;
   el.innerHTML = _viewerFiles.map((f, i) => {
     const name = f.title || "(bez tytułu)";
     const active = i === _viewerIdx ? " viewer-file-active" : "";
@@ -165,8 +186,6 @@ async function saveInlineEdit() {
 }
 
 function wireViewerEvents() {
-  document.getElementById("v-back").addEventListener("click", () => showView("gallery"));
-
   wireSplitter();
   wireImageZoomPan();
   wireViewerKeyboardNav();
@@ -197,7 +216,7 @@ function wireViewerEvents() {
       return;
     }
     _viewerFiles.splice(_viewerIdx, 1);
-    if (_viewerFiles.length === 0) { showView("gallery"); return; }
+    if (_viewerFiles.length === 0) { closePopup(); return; }
     _viewerIdx = Math.min(_viewerIdx, _viewerFiles.length - 1);
     await loadCurrentNote();
   });
@@ -343,10 +362,11 @@ function wireViewerKeyboardNav() {
     document.removeEventListener("keydown", _viewerKeydownHandler);
   }
   _viewerKeydownHandler = async (e) => {
-    // _currentView (patrz core.js) — nie reaguj, gdy viewer jest schowany
-    // pod innym widokiem. _viewerEditMode — nie przechwytuj strzałek,
-    // które akurat służą do poruszania kursorem w <textarea> edycji.
-    if (_currentView !== "viewer" || _viewerEditMode) return;
+    // _viewerPopupOpen — nie reaguj, gdy popup Viewera jest zamknięty
+    // (listener mógłby przeżyć do następnego otwarcia, patrz komentarz
+    // przy deklaracji zmiennej). _viewerEditMode — nie przechwytuj
+    // strzałek, które akurat służą do poruszania kursorem w edycji.
+    if (!_viewerPopupOpen || _viewerEditMode) return;
     if (e.key === "ArrowLeft" && _viewerIdx > 0) {
       e.preventDefault();
       _viewerIdx--;

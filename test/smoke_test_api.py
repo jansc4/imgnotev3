@@ -347,6 +347,78 @@ def test_two_phase_login_existing_vault():
         print("OK  login() ze złym hasłem do istniejącego vaulta rzuca wyjątek")
 
 
+def test_rename_move_folder_and_note():
+    """rename_folder/move_folder/move_note (runda folder rename/move,
+    2026-08-28) — na realnych plikach, w tym pusty (pending) podfolder,
+    żeby sprawdzić że nie znika po zmianie ścieżki."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        api = Api()
+        api.password = PASSWORD
+        api.root_folders.append(str(root))
+        api._setup_root(str(root))
+
+        klienci = api.create_subfolder(str(root), "Klienci")
+        p1 = api.save_note(klienci, "A", "treść A", ["x"])
+        firma_x = api.create_subfolder(klienci, "FirmaX")
+        p2 = api.save_note(firma_x, "B", "treść B", ["y"])
+        pusty = api.create_subfolder(klienci, "PustyPodfolder")  # pending, bez notatki
+
+        # --- rename_folder: "Klienci" -> "Kontrahenci" (ten sam rodzic) ---
+        new_klienci = api.rename_folder(klienci, "Kontrahenci")
+        assert new_klienci == f"{root}/Kontrahenci"
+        assert api.get_note(p1)["folder"] == new_klienci
+        assert api.get_note(p2)["folder"] == f"{new_klienci}/FirmaX", (
+            "podfolder FirmaX musi wędrować razem z rodzicem"
+        )
+        print("OK  rename_folder przenosi notatki w sobie i w podfolderach")
+
+        tree = api.get_folder_tree()
+        names_at_root = {c["name"] for c in tree[0]["children"]}
+        assert "Kontrahenci" in names_at_root and "Klienci" not in names_at_root
+        kontrahenci_node = next(c for c in tree[0]["children"] if c["name"] == "Kontrahenci")
+        child_names = {c["name"] for c in kontrahenci_node["children"]}
+        assert "PustyPodfolder" in child_names, (
+            "pusty (pending) podfolder nie może zniknąć z drzewa po rename rodzica"
+        )
+        print("OK  rename_folder aktualizuje też pending (pusty podfolder)")
+
+        # --- move_folder: "FirmaX" spod Kontrahenci -> bezpośrednio pod root ---
+        firma_x_new = f"{new_klienci}/FirmaX"
+        moved = api.move_folder(firma_x_new, str(root))
+        assert moved == f"{root}/FirmaX"
+        assert api.get_note(p2)["folder"] == moved
+        tree = api.get_folder_tree()
+        root_children = {c["name"] for c in tree[0]["children"]}
+        assert "FirmaX" in root_children
+        kontrahenci_node = next(c for c in tree[0]["children"] if c["name"] == "Kontrahenci")
+        assert not any(c["name"] == "FirmaX" for c in kontrahenci_node["children"])
+        print("OK  move_folder przenosi pod nowego rodzica")
+
+        try:
+            api.move_folder(new_klienci, f"{new_klienci}/PustyPodfolder")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("przeniesienie folderu do własnego podfolderu powinno rzucić ValueError")
+        print("OK  move_folder odrzuca przeniesienie do samego siebie/podfolderu")
+
+        try:
+            api.rename_folder(str(root), "CośInnego")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("rename_folder na roocie powinno rzucić ValueError")
+        print("OK  rename_folder odmawia zmiany nazwy roota")
+
+        # --- move_note: pojedyncza notatka do innego folderu ---
+        api.move_note(p1, moved)  # p1 ("A") z Kontrahenci -> FirmaX
+        assert api.get_note(p1)["folder"] == moved
+        assert api.list_notes(new_klienci) == []
+        assert len(api.list_notes(moved)) == 2
+        print("OK  move_note przenosi pojedynczą notatkę")
+
+
 if __name__ == "__main__":
     main()
     test_progress_pushed_during_setup_root()
@@ -354,3 +426,4 @@ if __name__ == "__main__":
     test_count_notes_in_folder()
     test_two_phase_login_fresh_vault()
     test_two_phase_login_existing_vault()
+    test_rename_move_folder_and_note()

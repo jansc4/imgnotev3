@@ -112,6 +112,22 @@ class FolderManager:
         zawartość w indeksie, get_tree_root_node znajdzie go i tak."""
         self._pending.discard(folder_path)
 
+    def rename_pending(self, old_folder_path: str, new_folder_path: str) -> None:
+        """Aktualizuje _pending po rename/move folderu (Api._rewrite_notes_
+        folder_path) — pusty, jeszcze bez żadnej notatki podfolder inaczej
+        zniknąłby z drzewa po zmianie ścieżki (rewrite notatek go nie
+        dotyczy, bo w indeksie po prostu nie ma dla niego wpisu)."""
+        prefix = f"{old_folder_path}/"
+        updated: set[str] = set()
+        for p in self._pending:
+            if p == old_folder_path:
+                updated.add(new_folder_path)
+            elif p.startswith(prefix):
+                updated.add(new_folder_path + p[len(old_folder_path):])
+            else:
+                updated.add(p)
+        self._pending = updated
+
     def list_all_notes(self) -> list[dict]:
         """Wszystkie notatki w tym roocie, płasko (widok Home) — folder
         jako display_path, gotowe do zwrócenia na front. `mtime` dorzucone

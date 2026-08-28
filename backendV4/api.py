@@ -293,6 +293,110 @@ class Api:
             raise ValueError(f"Nieznany folder: {folder}")
         return len(self._notes_under_folder(fm, folder))
 
+    def _validate_folder_op(self, folder: str) -> FolderManager:
+        """Wspólny guard dla rename_folder/move_folder — root folderów nie
+        da się przemianować/przenieść (to nie wirtualna ścieżka w indeksie,
+        tylko sam root_folder; trzeba by fizycznie przenieść katalog na
+        dysku i przepiąć IndexManager, poza zakresem tej rundy)."""
+        if folder in self.root_folders:
+            raise ValueError("To folder główny — zmiana nazwy/przeniesienie niedostępne.")
+        fm = self._folder_manager_for(folder)
+        if not fm:
+            raise ValueError(f"Nieznany folder: {folder}")
+        return fm
+
+    def _rewrite_notes_folder_path(self, fm: FolderManager, old_display_path: str, new_display_path: str) -> int:
+        """Dzielony rdzeń rename_folder/move_folder. Foldery są emergentne
+        z folder_path (patrz folder_manager.py) — nie ma osobnej encji
+        folderu do zaktualizowania, więc "zmiana nazwy/przeniesienie" to
+        przepisanie prefiksu folder_path w KAŻDEJ notatce pod starą
+        ścieżką (siebie + podfoldery), jedna po drugiej. Analogiczne do
+        _rewrite_note_tags (tam: transform tagów; tu: transform ścieżki)."""
+        mgr = fm.index_manager
+        old_folder_path = fm.to_folder_path(old_display_path)
+        new_folder_path = fm.to_folder_path(new_display_path)
+        prefix = f"{old_folder_path}/" if old_folder_path else ""
+
+        # entry["folder_path"] z indeksu — tania warstwa, bez deszyfrowania —
+        # wystarcza żeby policzyć NOWĄ ścieżkę przed sięgnięciem po pełną treść.
+        targets = [
+            (filename, entry["folder_path"]) for filename, entry in mgr.index.notes.items()
+            if entry["folder_path"] == old_folder_path or entry["folder_path"].startswith(prefix)
+        ]
+        total = len(targets)
+        for i, (filename, entry_folder_path) in enumerate(targets, start=1):
+            rel = entry_folder_path[len(old_folder_path):]  # "" albo "/reszta_podfolderu"
+            updated_folder_path = new_folder_path + rel
+
+            path = os.path.join(mgr.root_folder, filename)
+            mtime = os.path.getmtime(path)
+            cached = self.note_cache.get_full(path, self.password or None, mtime)
+            note = ImageNoteFile(
+                text=cached.text, image_data=cached.image_data, tags=cached.tags,
+                title=cached.title, folder_path=updated_folder_path,
+            )
+            note.save_to_file(path, password=self.password or None)
+            mgr.note_saved(path, note)
+            self._push_progress(i, total)
+
+        mgr.save()
+        fm.rename_pending(old_folder_path, new_folder_path)
+        return total
+
+    def rename_folder(self, folder: str, new_name: str) -> str:
+        """Zmienia OSTATNI segment ścieżki (zostaje w tym samym rodzicu).
+        Zwraca nowy display_path — front musi go użyć do dalszej nawigacji
+        (stary już nie istnieje)."""
+        new_name = (new_name or "").strip().replace("/", "-").replace("\\", "-")
+        if not new_name:
+            raise ValueError("Nazwa nie może być pusta.")
+        fm = self._validate_folder_op(folder)
+        parent = folder.rsplit("/", 1)[0]
+        new_display_path = f"{parent}/{new_name}"
+        if new_display_path == folder:
+            return folder
+        self._rewrite_notes_folder_path(fm, folder, new_display_path)
+        return new_display_path
+
+    def move_folder(self, folder: str, new_parent: str) -> str:
+        """Przenosi folder (razem z zawartością i podfolderami) pod nowego
+        rodzica, zachowując jego nazwę. Jeden root w praktyce (decyzja z
+        tej sesji) — nie obsługuje przenoszenia między różnymi rootami."""
+        fm = self._validate_folder_op(folder)
+        if new_parent == folder or new_parent.startswith(folder + "/"):
+            raise ValueError("Nie można przenieść folderu do samego siebie ani do własnego podfolderu.")
+        name = folder.rsplit("/", 1)[-1]
+        new_display_path = f"{new_parent}/{name}" if new_parent else name
+        if new_display_path == folder:
+            return folder
+        self._rewrite_notes_folder_path(fm, folder, new_display_path)
+        return new_display_path
+
+    def move_note(self, filepath: str, new_folder: str) -> None:
+        """Przenosi POJEDYNCZĄ notatkę do innego folderu — nazwa pliku na
+        dysku (losowa) się nie zmienia, tylko folder_path w zaszyfrowanym
+        payloadzie. Bez bulk-progresu (jeden plik, nie warto pokazywać modala)."""
+        fm = self._folder_manager_for(new_folder)
+        if not fm:
+            raise ValueError(f"Nieznany folder docelowy: {new_folder}")
+        new_folder_path = fm.to_folder_path(new_folder)
+
+        mgr = self._index_manager_for_filepath(filepath)
+        if not mgr:
+            raise ValueError(f"Nieznany plik: {filepath}")
+        mtime = os.path.getmtime(filepath)
+        cached = self.note_cache.get_full(filepath, self.password or None, mtime)
+        if cached.folder_path == new_folder_path:
+            return
+        note = ImageNoteFile(
+            text=cached.text, image_data=cached.image_data, tags=cached.tags,
+            title=cached.title, folder_path=new_folder_path,
+        )
+        note.save_to_file(filepath, password=self.password or None)
+        mgr.note_saved(filepath, note)
+        fm.note_saved(new_folder_path)
+        mgr.save()
+
     def delete_folder(self, folder: str) -> dict:
         """Usuwa WSZYSTKIE notatki pod tą wirtualną ścieżką (siebie i
         wszystkich podfolderów) — nie ma czegoś do "opróżnienia" osobno,

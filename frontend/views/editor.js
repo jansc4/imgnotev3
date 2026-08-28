@@ -612,8 +612,11 @@ function wireEditorEvents(folder, originalFilepath) {
     currentOriginalFilepath = null;
     const titleLabel = document.getElementById("editor-title-label");
     if (titleLabel) titleLabel.textContent = "Nowa notatka";
-    const popupTitle = document.getElementById("popup-title");
-    if (popupTitle) popupTitle.textContent = "Nowa notatka";
+    // Bez globalnego id="popup-title" (stos warstw — mogłoby ich być kilka
+    // naraz) — dobieramy tytuł TEJ konkretnej warstwy przez najbliższego
+    // przodka .popup-layer, względem znanego elementu treści.
+    const layerTitle = titleLabel && titleLabel.closest(".popup-layer")?.querySelector(".popup-title");
+    if (layerTitle) layerTitle.textContent = "Nowa notatka";
 
     const keepTags = document.getElementById("carry-tags-cb").checked;
     document.getElementById("note-title").value = "";

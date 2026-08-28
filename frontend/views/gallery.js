@@ -10,8 +10,6 @@ registerView("gallery", async function (container) {
       <div class="toolbar">
         <span class="app-title">ImgNote v3</span>
         <div class="toolbar-spacer"></div>
-        <button id="btn-add-folder" class="btn">+ Dodaj folder</button>
-        <button id="btn-add-subfolder" class="btn">📁 Utwórz podfolder</button>
         <button id="btn-manage-tags" class="btn">🏷️ Zarządzaj tagami</button>
         <button id="btn-settings" class="btn" title="Ustawienia">⚙️</button>
         <button id="btn-add-note" class="btn btn-primary">+ Nowa notatka</button>
@@ -79,7 +77,7 @@ function renderFolderTree() {
   renderBreadcrumb();
   if (!el) return;
   if (AppState.folderTree.length === 0) {
-    el.innerHTML = `<p class="tree-empty">Brak folderów. Kliknij "+ Dodaj folder".</p>`;
+    el.innerHTML = `<p class="tree-empty">Brak folderów — root wybierany przy logowaniu.</p>`;
     return;
   }
   el.innerHTML = AppState.folderTree.map(renderTreeNode).join("");
@@ -95,12 +93,84 @@ function renderFolderTree() {
       toggleFolderExpanded(toggle.dataset.path);
     });
   });
-  el.querySelectorAll(".tree-delete").forEach((del) => {
-    del.addEventListener("click", (e) => {
-      e.stopPropagation();
-      deleteFolderWithConfirm(del.dataset.path);
+  el.querySelectorAll(".tree-row").forEach((row) => {
+    row.addEventListener("contextmenu", (e) => {
+      const path = row.querySelector(".tree-node")?.dataset.path;
+      if (path) openFolderContextMenu(e, path);
     });
   });
+}
+
+// Menu kontekstowe drzewa (krok 8, runda folder rename/move) — GŁÓWNY
+// mechanizm operacji na folderach, zastępuje dawny toolbar-owy przycisk
+// "Utwórz podfolder" i hover-ikonkę usuwania (oba były rozproszone,
+// każde gdzie indziej — teraz jedno miejsce, prawy klik na węźle).
+function openFolderContextMenu(event, path) {
+  const isRoot = AppState.rootFolders.includes(path);
+  const items = [
+    {
+      label: "📁 Nowy podfolder",
+      onClick: async () => {
+        const name = prompt(`Nazwa podfolderu w:\n${path}`);
+        if (!name || !name.trim()) return;
+        try {
+          const newPath = await callApi("create_subfolder", path, name);
+          await refreshFolderTree();
+          await selectFolder(newPath);
+        } catch (e) {
+          alert("Nie można utworzyć folderu:\n" + e);
+        }
+      },
+    },
+  ];
+  if (!isRoot) {
+    items.push(
+      {
+        label: "✏️ Zmień nazwę",
+        onClick: async () => {
+          const currentName = basename(path);
+          const newName = prompt(`Nowa nazwa dla „${currentName}”:`, currentName);
+          if (!newName || !newName.trim() || newName.trim() === currentName) return;
+          try {
+            const newPath = await callApi("rename_folder", path, newName.trim());
+            await refreshFolderTree();
+            if (AppState.currentFolder === path || AppState.currentFolder.startsWith(path + "/")) {
+              await selectFolder(newPath + AppState.currentFolder.slice(path.length));
+            } else {
+              await refreshCurrentGridView(); // np. podfolder-kafelek w widoku rodzica
+            }
+          } catch (e) {
+            alert("Nie można zmienić nazwy:\n" + e);
+          }
+        },
+      },
+      {
+        label: "→ Przenieś",
+        onClick: () => {
+          openFolderPickerPopup({
+            title: `Przenieś „${basename(path)}” do…`,
+            excludePath: path, // nie można przenieść w siebie/swój podfolder
+            onPick: async (destination) => {
+              try {
+                const newPath = await callApi("move_folder", path, destination);
+                await refreshFolderTree();
+                if (AppState.currentFolder === path || AppState.currentFolder.startsWith(path + "/")) {
+                  await selectFolder(newPath + AppState.currentFolder.slice(path.length));
+                } else {
+                  await refreshCurrentGridView();
+                }
+              } catch (e) {
+                alert("Nie można przenieść folderu:\n" + e);
+              }
+            },
+          });
+        },
+      },
+      { separator: true },
+      { label: "🗑️ Usuń", danger: true, onClick: () => deleteFolderWithConfirm(path) }
+    );
+  }
+  openContextMenu(event, items);
 }
 
 async function deleteFolderWithConfirm(path) {
@@ -130,6 +200,7 @@ async function deleteFolderWithConfirm(path) {
     await selectFolder(HOME_SENTINEL);
   } else {
     await refreshFolderTree();
+    await refreshCurrentGridView(); // np. podfolder-kafelek w widoku rodzica
   }
 }
 
@@ -281,6 +352,95 @@ async function showFolderNotes(folder) {
   renderNotesGrid(notes, false, false, subfolders);
 }
 
+// Odświeża aktualnie wyświetloną siatkę (Home albo konkretny folder) —
+// wspólny punkt użyty po move/delete notatki z menu kontekstowego, żeby
+// nie duplikować tej samej gałęzi if/else w kilku miejscach.
+async function refreshCurrentGridView() {
+  if (AppState.currentFolder === HOME_SENTINEL) {
+    await showHomeNotes();
+  } else if (AppState.currentFolder) {
+    await showFolderNotes(AppState.currentFolder);
+  }
+}
+
+// Menu kontekstowe karty notatki (krok 8, runda folder rename/move) —
+// dawniej "Usuń" siedziało wyłącznie w Viewerze, "Przenieś" nie istniało
+// wcale. Teraz oba dostępne wprost z siatki, bez otwierania notatki.
+function openNoteContextMenu(event, filepath, currentFolder) {
+  openContextMenu(event, [
+    {
+      label: "→ Przenieś",
+      onClick: () => {
+        openFolderPickerPopup({
+          title: "Przenieś notatkę do…",
+          excludePath: currentFolder, // "przenieś w to samo miejsce" nic nie daje
+          onPick: async (destination) => {
+            try {
+              await callApi("move_note", filepath, destination);
+              await refreshCurrentGridView();
+            } catch (e) {
+              alert("Nie można przenieść notatki:\n" + e);
+            }
+          },
+        });
+      },
+    },
+    { separator: true },
+    {
+      label: "🗑️ Usuń",
+      danger: true,
+      onClick: async () => {
+        const note = AppState.notes.find((n) => n.filepath === filepath);
+        const title = note ? note.title : "tę notatkę";
+        if (!confirm(`Czy na pewno chcesz usunąć:\n${title}?`)) return;
+        try {
+          await callApi("delete_note", filepath);
+          await refreshCurrentGridView();
+        } catch (e) {
+          alert("Błąd usuwania: " + e);
+        }
+      },
+    },
+  ]);
+}
+
+// Prosty, klikalny (nie draggable) wybór folderu docelowego dla "Przenieś" —
+// używany zarówno przez notatki, jak i foldery (openFolderContextMenu).
+// Klik od razu wybiera i zamyka — to jednorazowy wybór, nie formularz.
+function openFolderPickerPopup({ title, excludePath, onPick }) {
+  function isExcluded(path) {
+    return !!excludePath && (path === excludePath || path.startsWith(excludePath + "/"));
+  }
+  function renderPickerNode(node, depth) {
+    if (isExcluded(node.path)) return "";
+    const childrenHtml = node.children.map((c) => renderPickerNode(c, depth + 1)).join("");
+    return `
+      <div class="folder-picker-item" data-path="${escapeAttr(node.path)}" style="padding-left:${depth * 18 + 10}px">
+        📁 ${escapeHtml(node.name)}
+      </div>
+      ${childrenHtml}
+    `;
+  }
+
+  openPopup({
+    title: title || "Wybierz folder",
+    render(container) {
+      const html = AppState.folderTree.map((root) => renderPickerNode(root, 0)).join("");
+      container.innerHTML = `
+        <div class="folder-picker-list">
+          ${html || `<p class="tree-empty">Brak dostępnych folderów docelowych.</p>`}
+        </div>
+      `;
+      container.querySelectorAll(".folder-picker-item").forEach((el) => {
+        el.addEventListener("click", () => {
+          closePopup();
+          onPick(el.dataset.path);
+        });
+      });
+    },
+  });
+}
+
 async function selectHome() {
   AppState.currentFolder = HOME_SENTINEL;
   clearSearchInputs();
@@ -367,7 +527,10 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
     card.addEventListener("click", () => {
       const fp = card.dataset.filepath;
       const folder = card.dataset.folder || AppState.currentFolder;
-      showView("viewer", folder, fp);
+      openViewerPopup(folder, fp);
+    });
+    card.addEventListener("contextmenu", (e) => {
+      openNoteContextMenu(e, card.dataset.filepath, card.dataset.folder || AppState.currentFolder);
     });
   });
 
@@ -537,39 +700,6 @@ function wireGalleryEvents() {
     AppState.homeSort = btn.dataset.sort;
     toggleHomeSortBar(true); // odśwież stan "active" przycisków
     await showHomeNotes();
-  });
-
-  document.getElementById("btn-add-folder").addEventListener("click", async () => {
-    showProgressModal("Indeksowanie folderu…");
-    let folder;
-    try {
-      folder = await callApi("add_root_folder");
-    } catch (e) {
-      alert("Nie udało się dodać folderu:\n" + (e && e.message ? e.message : e));
-      return;
-    } finally {
-      hideProgressModal();
-    }
-    if (folder) {
-      await refreshFolderTree();
-      await selectFolder(folder);
-    }
-  });
-
-  document.getElementById("btn-add-subfolder").addEventListener("click", async () => {
-    if (!AppState.currentFolder || AppState.currentFolder === HOME_SENTINEL) {
-      alert("Najpierw wybierz folder z drzewa po lewej.");
-      return;
-    }
-    const name = prompt(`Nazwa podfolderu w:\n${AppState.currentFolder}`);
-    if (!name || !name.trim()) return;
-    try {
-      const newPath = await callApi("create_subfolder", AppState.currentFolder, name);
-      await refreshFolderTree();
-      await selectFolder(newPath);
-    } catch (e) {
-      alert("Nie można utworzyć folderu:\n" + e);
-    }
   });
 
   document.getElementById("btn-manage-tags").addEventListener("click", () => {

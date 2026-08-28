@@ -183,19 +183,9 @@ body {
 }
 .tree-node:hover { background: var(--accent-hover); color: #a5d6a7; }
 .tree-node-active { background: #2e7d32; color: #fff; }
-/* Ikonka usuwania folderu (krok 8, punkt 4) — chowana domyślnie, żeby */
-/* nie zaśmiecać drzewa; pojawia się na hover wiersza. */
-.tree-delete {
-  flex-shrink: 0;
-  width: 20px;
-  text-align: center;
-  font-size: 12px;
-  cursor: pointer;
-  opacity: 0;
-  border-radius: 3px;
-}
-.tree-row:hover .tree-delete { opacity: 0.7; }
-.tree-delete:hover { opacity: 1 !important; background: var(--accent-hover); }
+/* Ikonka usuwania (krok 8, punkt 4) zastąpiona menu kontekstowym (runda */
+/* folder rename/move, 2026-08-28) — prawy klik na .tree-row, patrz */
+/* .context-menu-* i gallery.js::openFolderContextMenu. */
 .tree-children { margin-left: 14px; border-left: 1px solid var(--border); padding-left: 4px; }
 .tree-node-home {
   margin: 8px 8px 4px;
@@ -329,10 +319,15 @@ body {
 }
 .progress-modal-pct { margin: 8px 0 0; color: #a5d6a7; font-size: 11px; min-height: 14px; }
 
-/* === Popup generyczny (krok 8, punkt 3) — jeden dla wszystkich === */
-/* nakładek (Tag Manager, Ustawienia, Editor). z-index NIŻSZY niż */
-/* progress-modal, żeby pasek postępu zawsze wypływał nad otwartym popupem. */
-.popup-modal {
+/* === Popup generyczny (krok 8, punkt 3; STOS warstw od 2026-08-28 === */
+/* rundy folder rename/move) — jeden dla wszystkich nakładek (Tag Manager, */
+/* Ustawienia, Editor, Viewer). Każda WARSTWA (.popup-layer) to osobny */
+/* pełnoekranowy overlay — kolejność w DOM daje kolejność malowania, więc */
+/* zagnieżdżone popupy (np. Editor nad Viewerem) nie wymagają ręcznego */
+/* z-index. #popup-root sam w sobie NIE jest już overlayem (tylko hostem */
+/* warstw) — [hidden] chowa cały stos naraz, gdy jest pusty. */
+#popup-root[hidden] { display: none; }
+.popup-layer {
   position: fixed;
   inset: 0;
   background: rgba(0, 0, 0, 0.55);
@@ -341,7 +336,6 @@ body {
   justify-content: center;
   z-index: 900;
 }
-.popup-modal[hidden] { display: none; }
 .popup-box {
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -374,6 +368,46 @@ body {
 .settings-label { display: block; font-size: 13px; color: var(--text); margin-bottom: 6px; }
 .settings-row input[type="range"] { width: 100%; accent-color: var(--accent); }
 .settings-note { color: #888; font-size: 11px; margin: 12px 0 0; line-height: 1.5; }
+
+/* === Menu kontekstowe (krok 8, runda folder rename/move) — z-index === */
+/* MIĘDZY popupami (900) a progress-modal (1000): musi wystawać nad */
+/* otwartym popupem (menu na drzewie w Viewerze itp.), ale nigdy nie */
+/* zasłaniać paska postępu, gdyby trwała jednocześnie jakaś operacja. */
+.context-menu {
+  position: fixed;
+  z-index: 950;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  min-width: 180px;
+}
+.context-menu-item {
+  padding: 6px 12px;
+  font-size: 13px;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.context-menu-item:hover { background: var(--accent-hover); color: #a5d6a7; }
+.context-menu-item-danger { color: #e57373; }
+.context-menu-item-danger:hover { background: rgba(229, 115, 115, 0.15); color: #e57373; }
+.context-menu-sep { height: 1px; background: var(--border); margin: 4px 0; }
+
+/* === Folder picker (popup "Przenieś do…", runda folder rename/move) === */
+.folder-picker-list { min-width: 300px; max-height: 50vh; overflow-y: auto; }
+.folder-picker-item {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 13px;
+  border-radius: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.folder-picker-item:hover { background: var(--accent-hover); color: #a5d6a7; }
 
 /* === Editor === */
 /* Krok 8 punkt 16: Editor teraz w popupie (.popup-box-wide), nie na */
@@ -428,7 +462,10 @@ body {
 .image-preview-inner img { max-width: 100%; max-height: 260px; object-fit: contain; }
 
 /* === Viewer === */
-.viewer { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+/* Krok 8, runda folder rename/move: Viewer teraz w popupie */
+/* (.popup-box-wide), ten sam powód co .editor — height:100% nie ma się */
+/* względem czego policzyć wewnątrz .popup-body (auto-wysokość). */
+.viewer { display: flex; flex-direction: column; height: 70vh; box-sizing: border-box; }
 .viewer-counter { color: #66bb6a; font-size: 12px; margin-left: 8px; }
 .viewer-body { display: flex; flex: 1; overflow: hidden; }
 .viewer-file-list {
