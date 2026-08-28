@@ -17,16 +17,22 @@ registerView("login", function (container) {
       <button id="login-pick-folder" class="btn login-btn">📁 Wybierz folder…</button>
       <p id="login-folder-path" class="login-folder-path"></p>
       <input type="password" id="login-pw" class="login-input" placeholder="Hasło…" autofocus>
+      <input type="password" id="login-pw-confirm" class="login-input" placeholder="Potwierdź hasło…" style="display:none">
       <button id="login-btn" class="btn btn-primary login-btn">Wejdź</button>
       <p id="login-error" class="login-error"></p>
     </div>
   `;
 
   let selectedFolder = null;
+  // Ustawione, gdy login() zwróci password_verified: false (świeży, pusty
+  // vault) — od tego momentu przycisk "Wejdź" nie woła już login() ponownie,
+  // tylko confirm_new_vault_password() z drugim polem.
+  let awaitingConfirm = false;
 
   const pickBtn = document.getElementById("login-pick-folder");
   const folderPathEl = document.getElementById("login-folder-path");
   const pwInput = document.getElementById("login-pw");
+  const pwConfirmInput = document.getElementById("login-pw-confirm");
   const btn = document.getElementById("login-btn");
   const errorEl = document.getElementById("login-error");
 
@@ -38,8 +44,41 @@ registerView("login", function (container) {
     }
   });
 
+  function resetConfirmStep() {
+    awaitingConfirm = false;
+    pwConfirmInput.style.display = "none";
+    pwConfirmInput.value = "";
+    btn.textContent = "Wejdź";
+  }
+
   async function submit() {
     errorEl.textContent = "";
+
+    if (awaitingConfirm) {
+      const confirmPw = pwConfirmInput.value;
+      if (!confirmPw) {
+        errorEl.textContent = "Powtórz hasło, żeby potwierdzić.";
+        return;
+      }
+      btn.disabled = true;
+      try {
+        await callApi("confirm_new_vault_password", selectedFolder, confirmPw);
+        AppState.password = pwInput.value;
+        pwInput.value = "";
+        pwConfirmInput.value = "";
+        showView("gallery");
+      } catch (e) {
+        // Złe potwierdzenie — na dysku nic jeszcze nie ma (patrz api.py),
+        // więc wystarczy pozwolić spróbować jeszcze raz to samo pole.
+        errorEl.textContent = "Hasła nie są identyczne. Spróbuj ponownie.";
+        pwConfirmInput.value = "";
+        pwConfirmInput.focus();
+      } finally {
+        btn.disabled = false;
+      }
+      return;
+    }
+
     if (!selectedFolder) {
       errorEl.textContent = "Najpierw wybierz folder.";
       return;
@@ -53,7 +92,18 @@ registerView("login", function (container) {
     btn.disabled = true;
     showProgressModal("Logowanie i indeksowanie folderu…");
     try {
-      await callApi("login", selectedFolder, pw);
+      const result = await callApi("login", selectedFolder, pw);
+      if (!result.password_verified) {
+        // Świeży, pusty vault — backend jeszcze NIC nie zapisał na dysk.
+        // Wymuszamy potwierdzenie, żeby literówka w haśle nie została
+        // nieodwracalnie "wypieczona" jako hasło do tego vaulta.
+        awaitingConfirm = true;
+        pwConfirmInput.style.display = "block";
+        pwConfirmInput.focus();
+        btn.textContent = "Potwierdź";
+        errorEl.textContent = "Nowy, pusty folder — powtórz hasło, żeby je potwierdzić.";
+        return;
+      }
       AppState.password = pw;
       pwInput.value = "";
       showView("gallery");
@@ -69,4 +119,10 @@ registerView("login", function (container) {
   pwInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") submit();
   });
+  pwConfirmInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") submit();
+  });
+  // Zmiana folderu po nieudanym potwierdzeniu (rzadkie, ale możliwe) —
+  // wróć do stanu pierwszego pola, żeby nie wysłać confirm dla innego roota.
+  pickBtn.addEventListener("click", resetConfirmStep);
 });

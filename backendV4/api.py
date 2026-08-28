@@ -177,24 +177,58 @@ class Api:
 
     # ── Sesja / logowanie ────────────────────────────────────────
 
-    def login(self, root_folder: str, password: str) -> bool:
+    def login(self, root_folder: str, password: str) -> dict:
         """
-        Folder + hasło razem, jeden krok (2026-08-28: dawniej osobny
-        add_root_folder() po zalogowaniu — root_folders nigdzie się nie
-        zapisywało, więc trzeba było go dodawać ręcznie po każdym
-        restarcie appki). Tu od razu buduje IndexManager (load_or_rebuild
-        + save) — dla już zaindeksowanego roota to reperacja, szybka;
-        dla zupełnie nowego to pełny rebuild, patrz krok 7 planu V4
-        w sprawie pokazania postępu.
+        Folder + hasło razem, jeden krok. Buduje IndexManager i robi
+        load_or_rebuild() — dla już zaindeksowanego roota to reperacja
+        (hasło od razu zweryfikowane próbą odszyfrowania indeksu/notatek);
+        dla ZUPEŁNIE PUSTEGO roota nie ma z czym porównać podanego hasła
+        (mgr.password_verified zostaje False).
+
+        W tym drugim przypadku CELOWO NIE wołamy tu mgr.save() — zapis
+        zaszyfrowanego indeksu tym hasłem to moment, w którym literówka
+        staje się nieodwracalna (użytkownik dowie się o niej dopiero przy
+        następnym logowaniu). Front musi wywołać confirm_new_vault_password()
+        z drugim wpisanym hasłem, zanim cokolwiek faktycznie trafi na dysk.
+        Dla istniejącego, zweryfikowanego vaulta zapisujemy od razu jak
+        dawniej — nie ma tam nic do potwierdzania.
         """
         if not root_folder:
             raise ValueError("Nie wybrano folderu.")
         if not password:
             raise ValueError("Hasło nie może być puste.")
         self.password = password
+
+        mgr = IndexManager(
+            root_folder, password=self.password or None, note_cache=self.note_cache,
+            on_progress=self._push_progress,
+        )
+        mgr.load_or_rebuild()
+        self.index_managers[root_folder] = mgr
+        self.folder_managers[root_folder] = FolderManager(mgr)
+
+        if mgr.password_verified:
+            mgr.save()
+            if root_folder not in self.root_folders:
+                self.root_folders.append(root_folder)
+            self._push_known_tags()
+
+        return {"password_verified": mgr.password_verified}
+
+    def confirm_new_vault_password(self, root_folder: str, password_confirm: str) -> bool:
+        """Domyka login() dla ŚWIEŻEGO (pustego) vaulta — front woła to
+        dopiero po drugim wpisaniu hasła i sprawdzeniu, że się zgadza z
+        pierwszym. Dopiero teraz zapisujemy indeks (czyli faktycznie
+        "ustawiamy" hasło do tego vaulta) — do tego momentu na dysku nic
+        się nie zmieniło, więc literówka w pierwszym polu nic nie kosztuje."""
+        mgr = self.index_managers.get(root_folder)
+        if not mgr:
+            raise ValueError(f"Brak sesji logowania dla: {root_folder} (wywołaj najpierw login()).")
+        if password_confirm != self.password:
+            raise ValueError("Hasła nie są identyczne.")
+        mgr.save()
         if root_folder not in self.root_folders:
             self.root_folders.append(root_folder)
-        self._setup_root(root_folder)
         self._push_known_tags()
         return True
 
@@ -238,24 +272,38 @@ class Api:
             raise ValueError(f"Nieznany folder: {parent}")
         return fm.create_folder(parent, name)
 
+    def _notes_under_folder(self, fm: FolderManager, folder: str) -> list[str]:
+        """Nazwy plików (siebie + wszystkie podfoldery) pod wirtualną
+        ścieżką `folder` — dzielony rdzeń delete_folder/count_notes_in_folder,
+        żeby definicja "co należy do tego folderu" nie żyła w dwóch
+        miejscach osobno."""
+        mgr = fm.index_manager
+        folder_path = fm.to_folder_path(folder)
+        prefix = f"{folder_path}/" if folder_path else ""
+        return [
+            filename for filename, entry in mgr.index.notes.items()
+            if entry["folder_path"] == folder_path or entry["folder_path"].startswith(prefix)
+        ]
+
+    def count_notes_in_folder(self, folder: str) -> int:
+        """Czysto odczytowe — do ostrzeżenia w UI PRZED wywołaniem
+        delete_folder (krok 8, punkt 4). Zero efektów ubocznych."""
+        fm = self._folder_manager_for(folder)
+        if not fm:
+            raise ValueError(f"Nieznany folder: {folder}")
+        return len(self._notes_under_folder(fm, folder))
+
     def delete_folder(self, folder: str) -> dict:
         """Usuwa WSZYSTKIE notatki pod tą wirtualną ścieżką (siebie i
         wszystkich podfolderów) — nie ma czegoś do "opróżnienia" osobno,
-        drzewo jest emergentne z folder_path. Ostrzeżenie w UI z liczbą
-        notatek do usunięcia to osobna, przyszła runda frontendu."""
+        drzewo jest emergentne z folder_path."""
         if folder in self.root_folders:
             raise ValueError("To folder główny — najpierw go odepnij (remove_root_folder).")
         fm = self._folder_manager_for(folder)
         if not fm:
             raise ValueError(f"Nieznany folder: {folder}")
         mgr = fm.index_manager
-        folder_path = fm.to_folder_path(folder)
-        prefix = f"{folder_path}/" if folder_path else ""
-
-        to_delete = [
-            filename for filename, entry in mgr.index.notes.items()
-            if entry["folder_path"] == folder_path or entry["folder_path"].startswith(prefix)
-        ]
+        to_delete = self._notes_under_folder(fm, folder)
         total = len(to_delete)
         for i, filename in enumerate(to_delete, start=1):
             path = os.path.join(mgr.root_folder, filename)

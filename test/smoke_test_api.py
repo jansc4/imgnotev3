@@ -258,7 +258,99 @@ def test_bulk_tag_actions_and_delete_folder():
         print("OK  import tagów faktycznie usunięty (KISS)")
 
 
+def test_count_notes_in_folder():
+    """count_notes_in_folder (krok 8, punkt 4) — musi zgadzać się z tym,
+    co faktycznie usunąłby delete_folder, i NIE dotykać dysku."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        api = Api()
+        api.password = PASSWORD
+        api.root_folders.append(str(root))
+        api._setup_root(str(root))
+
+        sub = api.create_subfolder(str(root), "Sub")
+        subsub = api.create_subfolder(sub, "SubSub")
+        api.save_note(str(root), "A", "", [])
+        api.save_note(sub, "B", "", [])
+        api.save_note(sub, "C", "", [])
+        api.save_note(subsub, "D", "", [])
+
+        assert api.count_notes_in_folder(str(root)) == 4, "root: wszystkie 4 notatki"
+        assert api.count_notes_in_folder(sub) == 3, "sub: B, C + D z subsub"
+        assert api.count_notes_in_folder(subsub) == 1
+        print("OK  count_notes_in_folder liczy siebie + podfoldery")
+
+        # count nie usuwa NIC — delete_folder zaraz potem powinien zwrócić
+        # dokładnie tyle samo, ile zapowiedział count.
+        expected = api.count_notes_in_folder(sub)
+        result = api.delete_folder(sub)
+        assert result == {"deleted": expected}, "count_notes_in_folder musi się zgadzać z delete_folder"
+        print("OK  count_notes_in_folder zgadza się z realnym delete_folder")
+
+
+def test_two_phase_login_fresh_vault():
+    """Świeży, pusty root: login() NIE zapisuje nic na dysk i zwraca
+    password_verified=False; dopiero confirm_new_vault_password() z
+    poprawnym powtórzeniem hasła faktycznie tworzy plik indeksu."""
+    from backendV4.index_file import IndexFile
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        index_path = root / IndexFile.FILENAME
+        api = Api()
+
+        result = api.login(str(root), PASSWORD)
+        assert result == {"password_verified": False}, "pusty root: nic do zweryfikowania"
+        assert not index_path.exists(), "login() na świeżym vaulcie nie może niczego zapisać"
+        assert str(root) not in api.root_folders, "root_folders dopiero po potwierdzeniu"
+        print("OK  login() na świeżym vaulcie: nic nie zapisuje, zwraca password_verified=False")
+
+        try:
+            api.confirm_new_vault_password(str(root), "zle_haslo")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("niezgodne hasło powinno rzucić ValueError")
+        assert not index_path.exists(), "błędne potwierdzenie nadal nie może niczego zapisać"
+        print("OK  confirm_new_vault_password odrzuca niezgodne hasło, nic nie zapisując")
+
+        ok = api.confirm_new_vault_password(str(root), PASSWORD)
+        assert ok is True
+        assert index_path.exists(), "poprawne potwierdzenie musi zapisać indeks"
+        assert str(root) in api.root_folders
+        print("OK  confirm_new_vault_password z poprawnym hasłem zapisuje indeks")
+
+
+def test_two_phase_login_existing_vault():
+    """Vault z istniejącym indeksem: login() weryfikuje hasło od razu
+    (próbą odszyfrowania) i zapisuje bez żadnego potwierdzenia — tak jak
+    dawniej, jednofazowo."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        bootstrap = Api()
+        bootstrap.password = PASSWORD
+        bootstrap._setup_root(str(root))  # tworzy realny, zapisany indeks
+
+        api = Api()
+        result = api.login(str(root), PASSWORD)
+        assert result == {"password_verified": True}
+        assert str(root) in api.root_folders
+        print("OK  login() na istniejącym vaulcie: od razu zweryfikowane i zapisane")
+
+        api_wrong = Api()
+        try:
+            api_wrong.login(str(root), "zupelnie_inne_haslo")
+        except Exception:
+            pass  # złe hasło do istniejącego indeksu wywala się przy odszyfrowaniu - oczekiwane
+        else:
+            raise AssertionError("złe hasło do istniejącego indeksu powinno rzucić wyjątek")
+        print("OK  login() ze złym hasłem do istniejącego vaulta rzuca wyjątek")
+
+
 if __name__ == "__main__":
     main()
     test_progress_pushed_during_setup_root()
     test_bulk_tag_actions_and_delete_folder()
+    test_count_notes_in_folder()
+    test_two_phase_login_fresh_vault()
+    test_two_phase_login_existing_vault()

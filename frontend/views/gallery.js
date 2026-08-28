@@ -13,6 +13,7 @@ registerView("gallery", async function (container) {
         <button id="btn-add-folder" class="btn">+ Dodaj folder</button>
         <button id="btn-add-subfolder" class="btn">📁 Utwórz podfolder</button>
         <button id="btn-manage-tags" class="btn">🏷️ Zarządzaj tagami</button>
+        <button id="btn-settings" class="btn" title="Ustawienia">⚙️</button>
         <button id="btn-add-note" class="btn btn-primary">+ Nowa notatka</button>
       </div>
       <div id="breadcrumb-bar" class="breadcrumb-bar"></div>
@@ -91,6 +92,39 @@ function renderFolderTree() {
       toggleFolderExpanded(toggle.dataset.path);
     });
   });
+  el.querySelectorAll(".tree-delete").forEach((del) => {
+    del.addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteFolderWithConfirm(del.dataset.path);
+    });
+  });
+}
+
+async function deleteFolderWithConfirm(path) {
+  let count;
+  try {
+    count = await callApi("count_notes_in_folder", path);
+  } catch (err) {
+    alert("Błąd odczytu zawartości folderu: " + err);
+    return;
+  }
+  const name = basename(path);
+  const msg = count > 0
+    ? `Usuniesz "${name}" i ${count} notatek wewnątrz (razem z podfolderami). Tej operacji nie da się cofnąć.\n\nNa pewno?`
+    : `Folder "${name}" jest pusty. Usunąć go?`;
+  if (!confirm(msg)) return;
+
+  try {
+    await callApi("delete_folder", path);
+  } catch (err) {
+    alert("Błąd usuwania folderu: " + err);
+    return;
+  }
+  if (AppState.currentFolder === path || AppState.currentFolder.startsWith(path + "/")) {
+    await selectFolder(HOME_SENTINEL);
+  } else {
+    await refreshFolderTree();
+  }
 }
 
 // Foldery są domyślnie zwinięte — rozwinięte trzymamy w AppState.expandedFolders
@@ -129,11 +163,19 @@ function renderTreeNode(node) {
     ? `<span class="tree-toggle" data-path="${escapeAttr(node.path)}">${isExpanded ? "▾" : "▸"}</span>`
     : `<span class="tree-toggle tree-toggle-empty"></span>`;
   const active = node.path === AppState.currentFolder ? " tree-node-active" : "";
+  // Root folderów (AppState.rootFolders) nie da się usunąć przez
+  // delete_folder — trzeba je odpiąć przez remove_root_folder (inna
+  // operacja) — więc ikonka usuwania pojawia się tylko dla podfolderów.
+  const isRoot = AppState.rootFolders.includes(node.path);
+  const deleteHtml = isRoot
+    ? ""
+    : `<span class="tree-delete" data-path="${escapeAttr(node.path)}" title="Usuń folder">🗑</span>`;
   return `
     <div class="tree-item">
       <div class="tree-row">
         ${toggleHtml}
         <div class="tree-node${active}" data-path="${escapeAttr(node.path)}">${escapeHtml(node.name)}</div>
+        ${deleteHtml}
       </div>
       ${childrenHtml}
     </div>
@@ -462,6 +504,10 @@ function wireGalleryEvents() {
 
   document.getElementById("btn-manage-tags").addEventListener("click", () => {
     showView("tag_manager");
+  });
+
+  document.getElementById("btn-settings").addEventListener("click", () => {
+    openSettingsPopup();
   });
 
   document.getElementById("btn-add-note").addEventListener("click", () => {
