@@ -2,6 +2,16 @@
  * views/editor.js — odpowiednik v2 add_page.py (skrócone MVP).
  * Obsługuje: nową notatkę i edycję istniejącej.
  *
+ * Krok 8 (punkt 16): przerobione na popup (fundament: popup.js, wide:true —
+ * potrzebuje realnej szerokości na dwie kolumny + drop zone'y). Zniknęło
+ * "← Wróć" — zamykanie to teraz ✕/Escape/klik w tło z samego popupu.
+ * Efekt uboczny architektury (nie osobna decyzja): dawniej "← Wróć" zawsze
+ * lądował w Galerii, nawet gdy wszedłeś tu z Viewera (edycja metadanych),
+ * bo showView("editor",...) podmieniał Viewer w routerze. W popupie Viewer
+ * nigdy nie znika spod spodu, więc zamknięcie bez zapisu wraca dokładnie
+ * tam, gdzie byłeś. Zapis ("Zapisz") celowo NIETKNIĘTY — nadal nawiguje do
+ * Galerii jak dawniej, żeby nie zmieniać więcej niż trzeba w jednym kroku.
+ *
  * DnD obrazka (priorytet — Etap 0a): przeciągnięcie z przeglądarki niesie
  * URL w dataTransfer, nie bajty — pobieramy przez fetch_url_image().
  * DnD z systemu (Etap 0b, drugorzędne): jeśli pywebview doda
@@ -13,6 +23,10 @@ let _editorPasteHandler = null;
 let _editorDragGuardHandlers = null;
 let _editorTags = [];              // lista dodanych tagów (chipy), jak QListWidget w v2
 let _editorSelectedTags = new Set(); // zaznaczone chipy do usunięcia (multi-select)
+// Zastępuje dawny _currentView !== "editor" — popup nie ustawia _currentView
+// z core.js (widok pod spodem zostaje aktywny), więc guard w wirePasteHandler
+// potrzebuje własnej flagi cyklu życia popupu.
+let _editorPopupOpen = false;
 
 function wireDragGuard() {
   if (_editorDragGuardHandlers) {
@@ -31,64 +45,74 @@ function wireDragGuard() {
   _editorDragGuardHandlers = { dragover, drop };
 }
 
-registerView("editor", async function (container, folder, filepath) {
+function openEditorPopup(folder, filepath) {
   const isEdit = !!filepath;
-  let initial = { title: "", text: "", tags: [], image_base64: "" };
-  if (isEdit) {
-    initial = await callApi("get_note", filepath);
-  }
-  _editorImageBase64 = initial.image_base64 || "";
+  _editorPopupOpen = true;
 
-  container.innerHTML = `
-    <div class="editor">
-      <div class="toolbar">
-        <button id="btn-back" class="btn">← Wróć</button>
-        <span id="editor-title-label" class="app-title">${isEdit ? "Edytuj notatkę" : "Nowa notatka"}</span>
-        <div class="toolbar-spacer"></div>
-        <button id="btn-paste-note" class="btn" title="Wklej zserializowaną notatkę (JSON) ze schowka">📋 Wklej notatkę</button>
-        <button id="btn-save" class="btn btn-primary">💾 Zapisz</button>
-        <button id="btn-save-next" class="btn btn-primary" title="Zapisz i od razu zacznij kolejną notatkę w tym samym folderze">💾 Zapisz i następna</button>
-      </div>
-      <div class="editor-body">
-        <div class="editor-left">
-          <div id="image-drop" class="drop-zone" tabindex="0">
-            <div id="image-preview" class="image-preview-inner">
-              ${_editorImageBase64
-                ? `<img src="data:image/png;base64,${_editorImageBase64}" alt="">`
-                : `<span class="drop-hint">Przeciągnij obraz z przeglądarki, wklej (Ctrl+V) obraz lub zserializowaną notatkę (JSON), albo kliknij, by wybrać plik</span>`}
+  openPopup({
+    title: isEdit ? "Edytuj notatkę" : "Nowa notatka",
+    wide: true,
+    onClose: () => {
+      _editorPopupOpen = false;
+    },
+    async render(container) {
+      let initial = { title: "", text: "", tags: [], image_base64: "" };
+      if (isEdit) {
+        initial = await callApi("get_note", filepath);
+      }
+      _editorImageBase64 = initial.image_base64 || "";
+
+      container.innerHTML = `
+        <div class="editor">
+          <div class="toolbar">
+            <span id="editor-title-label" class="app-title">${isEdit ? "Edytuj notatkę" : "Nowa notatka"}</span>
+            <div class="toolbar-spacer"></div>
+            <button id="btn-paste-note" class="btn" title="Wklej zserializowaną notatkę (JSON) ze schowka">📋 Wklej notatkę</button>
+            <button id="btn-save" class="btn btn-primary">💾 Zapisz</button>
+            <button id="btn-save-next" class="btn btn-primary" title="Zapisz i od razu zacznij kolejną notatkę w tym samym folderze">💾 Zapisz i następna</button>
+          </div>
+          <div class="editor-body">
+            <div class="editor-left">
+              <div id="image-drop" class="drop-zone" tabindex="0">
+                <div id="image-preview" class="image-preview-inner">
+                  ${_editorImageBase64
+                    ? `<img src="data:image/png;base64,${_editorImageBase64}" alt="">`
+                    : `<span class="drop-hint">Przeciągnij obraz z przeglądarki, wklej (Ctrl+V) obraz lub zserializowaną notatkę (JSON), albo kliknij, by wybrać plik</span>`}
+                </div>
+              </div>
+              <div id="text-drop" class="drop-zone drop-zone-text">
+                <span class="drop-hint">Przeciągnij plik tekstowy (.txt/.md/.pdf/.docx/…) lub link — zastąpi treść</span>
+              </div>
+            </div>
+            <div class="editor-right">
+              <input id="note-title" class="editor-input" placeholder="Tytuł notatki" value="${escapeAttr(initial.title)}">
+              <div class="tag-section-header">
+                <label class="tag-section-label">Tagi: <span class="drop-hint">jeden tag lub lista: projekt, ważne, archiwum</span></label>
+                <label class="carry-tags-label" title="Po 'Zapisz i następna' tagi zostaną zachowane">
+                  <input type="checkbox" id="carry-tags-cb"> Zachowaj tagi do następnej
+                </label>
+              </div>
+              <div class="tag-input-row">
+                <input id="tag-input" class="editor-input" placeholder="Wpisz tag lub listę (Enter = dodaj)…" autocomplete="off">
+                <button id="tag-add-btn" class="btn">+ Dodaj</button>
+                <button id="tag-remove-btn" class="btn">− Usuń</button>
+                <div id="tag-autocomplete" class="tag-autocomplete" hidden></div>
+              </div>
+              <div id="tag-chips" class="tag-chips"></div>
+              <textarea id="note-text" class="editor-textarea" placeholder="Treść (Markdown)…">${escapeHtml(initial.text || "")}</textarea>
             </div>
           </div>
-          <div id="text-drop" class="drop-zone drop-zone-text">
-            <span class="drop-hint">Przeciągnij plik tekstowy (.txt/.md/.pdf/.docx/…) lub link — zastąpi treść</span>
-          </div>
+          <p id="editor-status" class="editor-status"></p>
         </div>
-        <div class="editor-right">
-          <input id="note-title" class="editor-input" placeholder="Tytuł notatki" value="${escapeAttr(initial.title)}">
-          <div class="tag-section-header">
-            <label class="tag-section-label">Tagi: <span class="drop-hint">jeden tag lub lista: projekt, ważne, archiwum</span></label>
-            <label class="carry-tags-label" title="Po 'Zapisz i następna' tagi zostaną zachowane">
-              <input type="checkbox" id="carry-tags-cb"> Zachowaj tagi do następnej
-            </label>
-          </div>
-          <div class="tag-input-row">
-            <input id="tag-input" class="editor-input" placeholder="Wpisz tag lub listę (Enter = dodaj)…" autocomplete="off">
-            <button id="tag-add-btn" class="btn">+ Dodaj</button>
-            <button id="tag-remove-btn" class="btn">− Usuń</button>
-            <div id="tag-autocomplete" class="tag-autocomplete" hidden></div>
-          </div>
-          <div id="tag-chips" class="tag-chips"></div>
-          <textarea id="note-text" class="editor-textarea" placeholder="Treść (Markdown)…">${escapeHtml(initial.text || "")}</textarea>
-        </div>
-      </div>
-      <p id="editor-status" class="editor-status"></p>
-    </div>
-  `;
+      `;
 
-  _editorTags = [...(initial.tags || [])];
-  _editorSelectedTags = new Set();
-  renderTagChips();
-  wireEditorEvents(folder, isEdit ? filepath : null);
-});
+      _editorTags = [...(initial.tags || [])];
+      _editorSelectedTags = new Set();
+      renderTagChips();
+      wireEditorEvents(folder, isEdit ? filepath : null);
+    },
+  });
+}
 
 function updateImagePreview() {
   const el = document.getElementById("image-preview");
@@ -267,7 +291,7 @@ function wirePasteHandler() {
     document.removeEventListener("paste", _editorPasteHandler);
   }
   _editorPasteHandler = async (e) => {
-    if (_currentView !== "editor") return;
+    if (!_editorPopupOpen) return;
     const items = e.clipboardData && e.clipboardData.items;
     if (!items) return;
 
@@ -297,7 +321,7 @@ function wirePasteHandler() {
     }
 
     // 3) Fallback: QtWebEngine (zweryfikowane na Wayland) potrafi nie oddać
-    // image/png w clipboardData, mimo że obraz naprawdę jest w schowku
+    // image/png w JS clipboardData, mimo że obraz naprawdę jest w schowku
     // systemowym (widoczny np. w `wl-paste -l`) — JS Clipboard API bywa
     // tam ślepe na dane obrazkowe. Czytamy wtedy przez Qt (backend),
     // z pominięciem ograniczeń JS-owego API.
@@ -526,10 +550,6 @@ function wireEditorEvents(folder, originalFilepath) {
   wirePasteHandler();
   wireTagSection();
 
-  document.getElementById("btn-back").addEventListener("click", () => {
-    showView("gallery");
-  });
-
   document.getElementById("btn-paste-note").addEventListener("click", async () => {
     const statusEl = document.getElementById("editor-status");
     let clipboardText;
@@ -579,7 +599,7 @@ function wireEditorEvents(folder, originalFilepath) {
 
   document.getElementById("btn-save").addEventListener("click", async () => {
     if (!(await doSave())) return;
-    document.getElementById("editor-status").textContent = "✅ Zapisano.";
+    closePopup();
     showView("gallery");
     await selectFolder(folder);
   });
@@ -592,6 +612,8 @@ function wireEditorEvents(folder, originalFilepath) {
     currentOriginalFilepath = null;
     const titleLabel = document.getElementById("editor-title-label");
     if (titleLabel) titleLabel.textContent = "Nowa notatka";
+    const popupTitle = document.getElementById("popup-title");
+    if (popupTitle) popupTitle.textContent = "Nowa notatka";
 
     const keepTags = document.getElementById("carry-tags-cb").checked;
     document.getElementById("note-title").value = "";

@@ -353,6 +353,7 @@ body {
   flex-direction: column;
   overflow: hidden;
 }
+.popup-box-wide { width: 960px; }
 .popup-header {
   display: flex;
   align-items: center;
@@ -375,7 +376,11 @@ body {
 .settings-note { color: #888; font-size: 11px; margin: 12px 0 0; line-height: 1.5; }
 
 /* === Editor === */
-.editor { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
+/* Krok 8 punkt 16: Editor teraz w popupie (.popup-box-wide), nie na */
+/* pełnym ekranie — height:100% nie ma się względem czego policzyć wewnątrz */
+/* .popup-body (auto-wysokość), więc jawne 70vh daje wnętrzu (textarea */
+/* flex:1 itd.) coś konkretnego do wypełnienia. */
+.editor { display: flex; flex-direction: column; height: 70vh; box-sizing: border-box; }
 .editor-body { display: flex; flex: 1; overflow: hidden; gap: 12px; padding: 12px; }
 .editor-left { display: flex; flex-direction: column; gap: 12px; width: 320px; min-width: 260px; overflow-y: auto; }
 .editor-right { display: flex; flex-direction: column; gap: 8px; flex: 1; }

@@ -184,7 +184,7 @@ function wireViewerEvents() {
 
   document.getElementById("v-edit-meta").addEventListener("click", () => {
     const current = _viewerFiles[_viewerIdx];
-    showView("editor", current.folder, current.filepath);
+    openEditorPopup(current.folder, current.filepath);
   });
 
   document.getElementById("v-delete").addEventListener("click", async () => {

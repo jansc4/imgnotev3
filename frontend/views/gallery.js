@@ -585,7 +585,7 @@ function wireGalleryEvents() {
       alert("Wybierz konkretny folder z drzewa po lewej, żeby dodać notatkę.");
       return;
     }
-    showView("editor", AppState.currentFolder, null);
+    openEditorPopup(AppState.currentFolder, null);
   });
 
   document.getElementById("search-tag").addEventListener("input", () => {

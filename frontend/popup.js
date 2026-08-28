@@ -21,6 +21,10 @@
  *     title: "Zarządzanie tagami",
  *     render: (container) => { ...zbuduj DOM w container... },
  *     onClose: () => { ...opcjonalny cleanup (np. odpięcie listenerów)... },
+ *     wide: true, // opcjonalnie: szerszy .popup-box (patrz .popup-box-wide
+ *                 // w style.css) — dla treści potrzebującej realnej
+ *                 // szerokości (np. Editor), zamiast domyślnego
+ *                 // kurczenia się do szerokości treści.
  *   });
  *   closePopup(); // zamyka aktualnie otwarty popup, jeśli jest
  */
@@ -32,7 +36,7 @@ function _popupEscapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function openPopup({ title, render, onClose }) {
+function openPopup({ title, render, onClose, wide }) {
   closePopup(); // tylko jeden popup naraz — poprzedni zamyka się bez pytania
 
   const root = document.getElementById("popup-root");
@@ -41,9 +45,9 @@ function openPopup({ title, render, onClose }) {
   _popupOnClose = onClose || null;
 
   root.innerHTML = `
-    <div class="popup-box">
+    <div class="popup-box${wide ? " popup-box-wide" : ""}">
       <div class="popup-header">
-        <span class="popup-title">${_popupEscapeHtml(title || "")}</span>
+        <span id="popup-title" class="popup-title">${_popupEscapeHtml(title || "")}</span>
         <button id="popup-close" class="btn btn-icon" title="Zamknij (Esc)">✕</button>
       </div>
       <div id="popup-body" class="popup-body"></div>
