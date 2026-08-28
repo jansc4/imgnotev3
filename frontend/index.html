@@ -8,8 +8,27 @@
 <body>
   <div id="app"></div>
 
+  <!-- Jeden generyczny modal postępu (Filar 4, krok 7) - poza #app, żeby
+       mógł się pokazać niezależnie od aktywnego widoku. -->
+  <div id="progress-modal" class="progress-modal" hidden>
+    <div class="progress-modal-box">
+      <p id="progress-modal-label" class="progress-modal-label">Proszę czekać…</p>
+      <div class="progress-modal-bar-track">
+        <div id="progress-modal-bar-fill" class="progress-modal-bar-fill progress-modal-bar-indeterminate"></div>
+      </div>
+      <p id="progress-modal-pct" class="progress-modal-pct"></p>
+    </div>
+  </div>
+
+  <!-- Generyczny popup (krok 8, punkt 3) - jeden trwały kontener poza
+       #app, współistnieje z #progress-modal (np. Tag Manager w popupie +
+       bulk-akcja z paskiem postępu naraz). -->
+  <div id="popup-root" class="popup-modal" hidden></div>
+
   <!-- Core: stan, router, wrapper wywołań js_api -->
   <script src="core.js"></script>
+  <script src="progress_modal.js"></script>
+  <script src="popup.js"></script>
   <!-- Widoki (kolejność ładowania = kolejność Etapu 4 w planie) -->
   <script src="views/login.js"></script>
   <script src="views/gallery.js"></script>

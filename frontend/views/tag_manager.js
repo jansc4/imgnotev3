@@ -25,7 +25,6 @@ registerView("tag_manager", async function (container) {
         </div>
         <div class="tm-json-actions">
           <button id="tm-export" class="btn">📤 Eksportuj JSON</button>
-          <button id="tm-import" class="btn">📥 Importuj JSON</button>
         </div>
         <p id="tm-status" class="editor-status"></p>
       </div>
@@ -126,29 +125,5 @@ function wireTagManagerJsonActions() {
     } catch (err) {
       statusEl.textContent = "❌ Błąd zapisu: " + err;
     }
-  });
-
-  document.getElementById("tm-import").addEventListener("click", async () => {
-    const statusEl = document.getElementById("tm-status");
-    const path = await callApi("open_tags_dialog");
-    if (!path) return;
-    let preview;
-    try {
-      preview = await callApi("preview_import_tags_json", path);
-    } catch (err) {
-      statusEl.textContent = "❌ Błąd odczytu: " + err;
-      return;
-    }
-    const msg =
-      `Plik zawiera ${preview.imported_total} tagów.\n` +
-      `Nowe (do dodania): ${preview.new_tags.length}\n` +
-      `Już istniejące: ${preview.existing_count}\n` +
-      `Data eksportu: ${preview.exported_at}\n\n` +
-      `Dodać nowe tagi?`;
-    if (!confirm(msg)) return;
-    await callApi("confirm_import_tags", preview.new_tags);
-    AppState.knownTags = await callApi("get_known_tags");
-    statusEl.textContent = `✅ Dodano ${preview.new_tags.length} nowych tagów.`;
-    await refreshTagList();
   });
 }

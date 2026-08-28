@@ -14,6 +14,7 @@ let _viewerZoom = 1;
 let _viewerPanX = 0;
 let _viewerPanY = 0;
 let _viewerPanHandlers = null;    // { move, up } — do odpięcia przy ponownym wejściu w viewer
+let _viewerKeydownHandler = null; // do odpięcia przy ponownym wejściu w viewer
 const ZOOM_MIN = 0.15;
 const ZOOM_MAX = 10;
 const ZOOM_STEP = 1.25;
@@ -21,8 +22,8 @@ const ZOOM_STEP = 1.25;
 registerView("viewer", async function (container, folder, filepath) {
   _viewerFolder = folder;
   _viewerFiles = await callApi("collect_viewer_files", folder);
-  if (_viewerFiles.length === 0) _viewerFiles = [filepath];
-  _viewerIdx = Math.max(0, _viewerFiles.indexOf(filepath));
+  if (_viewerFiles.length === 0) _viewerFiles = [{ filepath, title: "", folder }];
+  _viewerIdx = Math.max(0, _viewerFiles.findIndex((f) => f.filepath === filepath));
   _viewerEditMode = false;
 
   container.innerHTML = `
@@ -57,13 +58,11 @@ registerView("viewer", async function (container, folder, filepath) {
               <button id="v-discard" class="btn">✕ Anuluj</button>
             </div>
           </div>
+          <button id="v-prev" class="btn viewer-nav-btn viewer-nav-prev" title="Poprzedni (←)">◀</button>
+          <button id="v-next" class="btn viewer-nav-btn viewer-nav-next" title="Następny (→)">▶</button>
         </div>
       </div>
-      <div class="viewer-bottom">
-        <button id="v-prev" class="btn">◀ Poprzedni</button>
-        <span id="v-tags" class="viewer-tags"></span>
-        <button id="v-next" class="btn">Następny ▶</button>
-      </div>
+      <div id="v-tags" class="viewer-tags-row"></div>
     </div>
   `;
 
@@ -74,10 +73,10 @@ registerView("viewer", async function (container, folder, filepath) {
 
 function renderFileList() {
   const el = document.getElementById("v-file-list");
-  el.innerHTML = _viewerFiles.map((fp, i) => {
-    const name = fp.split("/").pop().replace(/\.imgnote$/, "");
+  el.innerHTML = _viewerFiles.map((f, i) => {
+    const name = f.title || "(bez tytułu)";
     const active = i === _viewerIdx ? " viewer-file-active" : "";
-    return `<div class="viewer-file-item${active}" data-idx="${i}">${escapeHtml(name)}</div>`;
+    return `<div class="viewer-file-item${active}" data-idx="${i}" title="${escapeAttr(name)}">${escapeHtml(name)}</div>`;
   }).join("");
   el.querySelectorAll(".viewer-file-item").forEach((item) => {
     item.addEventListener("click", async () => {
@@ -89,7 +88,7 @@ function renderFileList() {
 
 async function loadCurrentNote() {
   if (_viewerEditMode) discardEdit();
-  const filepath = _viewerFiles[_viewerIdx];
+  const filepath = _viewerFiles[_viewerIdx].filepath;
   const total = _viewerFiles.length;
 
   document.getElementById("v-counter").textContent = `${_viewerIdx + 1} / ${total}`;
@@ -102,7 +101,7 @@ async function loadCurrentNote() {
   } catch (err) {
     document.getElementById("v-md-view").textContent = "Błąd odczytu: " + err;
     document.getElementById("v-image-viewport").innerHTML = "";
-    document.getElementById("v-tags").textContent = "";
+    document.getElementById("v-tags").innerHTML = "";
     return;
   }
 
@@ -118,8 +117,9 @@ async function loadCurrentNote() {
   const html = await callApi("render_markdown", note.text);
   document.getElementById("v-md-view").innerHTML = html;
 
-  document.getElementById("v-tags").textContent =
-    note.tags.length ? note.tags.map((t) => `#${t}`).join("  ") : "";
+  document.getElementById("v-tags").innerHTML = note.tags
+    .map((t) => `<span class="viewer-tag-chip">${escapeHtml(t)}</span>`)
+    .join("");
 
   renderFileList();
 }
@@ -151,12 +151,11 @@ function discardEdit() {
 }
 
 async function saveInlineEdit() {
-  const filepath = _viewerFiles[_viewerIdx];
-  const noteFolder = filepath.substring(0, filepath.lastIndexOf("/"));
+  const filepath = _viewerFiles[_viewerIdx].filepath;
   const newText = document.getElementById("v-md-editor").value;
   const note = await callApi("get_note", filepath);
   try {
-    await callApi("save_note", noteFolder, note.title, newText, note.tags, note.image_base64, filepath);
+    await callApi("save_note", note.folder, note.title, newText, note.tags, note.image_base64, filepath);
     _viewerCurrentText = newText;
     document.getElementById("v-md-view").innerHTML = await callApi("render_markdown", newText);
     discardEdit();
@@ -170,6 +169,7 @@ function wireViewerEvents() {
 
   wireSplitter();
   wireImageZoomPan();
+  wireViewerKeyboardNav();
 
   document.getElementById("v-prev").addEventListener("click", async () => {
     if (_viewerIdx > 0) { _viewerIdx--; await loadCurrentNote(); }
@@ -183,17 +183,15 @@ function wireViewerEvents() {
   document.getElementById("v-discard").addEventListener("click", discardEdit);
 
   document.getElementById("v-edit-meta").addEventListener("click", () => {
-    const filepath = _viewerFiles[_viewerIdx];
-    const noteFolder = filepath.substring(0, filepath.lastIndexOf("/"));
-    showView("editor", noteFolder, filepath);
+    const current = _viewerFiles[_viewerIdx];
+    showView("editor", current.folder, current.filepath);
   });
 
   document.getElementById("v-delete").addEventListener("click", async () => {
-    const filepath = _viewerFiles[_viewerIdx];
-    const name = filepath.split("/").pop();
-    if (!confirm(`Czy na pewno chcesz usunąć:\n${name}?`)) return;
+    const current = _viewerFiles[_viewerIdx];
+    if (!confirm(`Czy na pewno chcesz usunąć:\n${current.title}?`)) return;
     try {
-      await callApi("delete_note", filepath);
+      await callApi("delete_note", current.filepath);
     } catch (err) {
       alert("Błąd usuwania: " + err);
       return;
@@ -334,4 +332,30 @@ function wireImageZoomPan() {
   document.getElementById("v-zoom-in").addEventListener("click", () => zoomBy(ZOOM_STEP));
   document.getElementById("v-zoom-out").addEventListener("click", () => zoomBy(1 / ZOOM_STEP));
   document.getElementById("v-zoom-reset").addEventListener("click", () => resetZoomPan());
+}
+
+// ── Nawigacja strzałkami klawiatury (krok 8, punkt 9) ─────────────────
+
+function wireViewerKeyboardNav() {
+  // Widok viewer może być otwierany wielokrotnie — odepnij listener
+  // z poprzedniego wywołania, żeby nie zaśmiecać document.
+  if (_viewerKeydownHandler) {
+    document.removeEventListener("keydown", _viewerKeydownHandler);
+  }
+  _viewerKeydownHandler = async (e) => {
+    // _currentView (patrz core.js) — nie reaguj, gdy viewer jest schowany
+    // pod innym widokiem. _viewerEditMode — nie przechwytuj strzałek,
+    // które akurat służą do poruszania kursorem w <textarea> edycji.
+    if (_currentView !== "viewer" || _viewerEditMode) return;
+    if (e.key === "ArrowLeft" && _viewerIdx > 0) {
+      e.preventDefault();
+      _viewerIdx--;
+      await loadCurrentNote();
+    } else if (e.key === "ArrowRight" && _viewerIdx < _viewerFiles.length - 1) {
+      e.preventDefault();
+      _viewerIdx++;
+      await loadCurrentNote();
+    }
+  };
+  document.addEventListener("keydown", _viewerKeydownHandler);
 }

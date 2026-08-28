@@ -428,7 +428,16 @@ function wireGalleryEvents() {
   });
 
   document.getElementById("btn-add-folder").addEventListener("click", async () => {
-    const folder = await callApi("add_root_folder");
+    showProgressModal("Indeksowanie folderu…");
+    let folder;
+    try {
+      folder = await callApi("add_root_folder");
+    } catch (e) {
+      alert("Nie udało się dodać folderu:\n" + (e && e.message ? e.message : e));
+      return;
+    } finally {
+      hideProgressModal();
+    }
     if (folder) {
       await refreshFolderTree();
       await selectFolder(folder);
@@ -480,10 +489,7 @@ async function refreshKnownTags() {
   await callApi("refresh_tags");
 }
 
-// Wywoływane przez backend przez window.evaluate_js (patrz backend/api.py).
+// Wywoływane przez backend przez window.evaluate_js (patrz backendV4/api.py).
 window.onTagsUpdated = function (tags) {
   AppState.knownTags = tags;
-};
-window.onTagScanProgress = function (current, total) {
-  // Miejsce na wskaźnik postępu w UI — na razie brak, jak w MVP z Etapu 3.
 };

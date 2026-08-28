@@ -54,7 +54,8 @@ body {
   padding: 3px 10px;
 }
 .login-input:focus { border-color: var(--accent); outline: none; }
-.login-btn { width: 140px; height: 36px; }
+.login-btn { width: 220px; height: 36px; }
+.login-folder-path { color: #a5d6a7; font-size: 11px; margin: -8px 0 0; max-width: 320px; word-break: break-all; }
 .login-error { color: #e57373; min-height: 18px; margin: 0; }
 
 /* === Przyciski (wspólne dla wszystkich widoków) === */
@@ -249,6 +250,91 @@ body {
 
 .not-implemented { padding: 24px; color: #888; text-align: center; }
 
+/* === Progress modal (Filar 4, krok 7) — jeden dla wszystkich długich === */
+/* operacji. Kolejność reguł ma znaczenie: [hidden] musi wygrać z display:flex. */
+.progress-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.progress-modal[hidden] { display: none; }
+.progress-modal-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 20px 28px;
+  min-width: 280px;
+  text-align: center;
+}
+.progress-modal-label { margin: 0 0 12px; color: var(--text); font-size: 13px; }
+.progress-modal-bar-track {
+  height: 8px;
+  background: #1a1a1a;
+  border-radius: 4px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  position: relative;
+}
+.progress-modal-bar-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.15s ease;
+}
+.progress-modal-bar-indeterminate {
+  position: absolute;
+  width: 40%;
+  animation: progress-modal-indeterminate 1.1s ease-in-out infinite;
+}
+@keyframes progress-modal-indeterminate {
+  0% { left: -40%; }
+  100% { left: 100%; }
+}
+.progress-modal-pct { margin: 8px 0 0; color: #a5d6a7; font-size: 11px; min-height: 14px; }
+
+/* === Popup generyczny (krok 8, punkt 3) — jeden dla wszystkich === */
+/* nakładek (Tag Manager, Ustawienia, Editor). z-index NIŻSZY niż */
+/* progress-modal, żeby pasek postępu zawsze wypływał nad otwartym popupem. */
+.popup-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 900;
+}
+.popup-modal[hidden] { display: none; }
+.popup-box {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  min-width: 320px;
+  max-width: 90vw;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.popup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+.popup-title { color: var(--text); font-size: 14px; font-weight: 600; }
+.popup-body {
+  padding: 16px;
+  overflow-y: auto;
+  flex: 1;
+}
+
 /* === Editor === */
 .editor { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
 .editor-body { display: flex; flex: 1; overflow: hidden; gap: 12px; padding: 12px; }
@@ -302,16 +388,23 @@ body {
 .viewer-counter { color: #66bb6a; font-size: 12px; margin-left: 8px; }
 .viewer-body { display: flex; flex: 1; overflow: hidden; }
 .viewer-file-list {
-  width: 200px;
+  width: 240px;
   min-width: 140px;
   overflow-y: auto;
   border-right: 1px solid var(--border);
 }
-.viewer-file-item { padding: 6px 10px; font-size: 13px; cursor: pointer; }
+.viewer-file-item {
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .viewer-file-item:hover { background: var(--accent-hover); color: #a5d6a7; }
 .viewer-file-active { background: #2e7d32; color: #fff; }
 
-.viewer-content { display: flex; flex: 1; overflow: hidden; }
+.viewer-content { display: flex; flex: 1; overflow: hidden; position: relative; }
 .viewer-image {
   flex: 1;
   min-width: 200px;
@@ -361,6 +454,31 @@ body {
   text-align: center;
 }
 
+/* Pływające przyciski poprzedni/następny (krok 8, punkt 8) — na */
+/* krawędziach .viewer-content, nad obrazem/tekstem, zawsze widoczne. */
+/* UWAGA: bez opacity na całym elemencie (przygasza też glif strzałki) —
+   tło lekko przezroczyste, ale wystarczająco kontrastowe względem
+   .viewer-image (#141414), + cień żeby odciąć się od jasnych obrazów. */
+.viewer-nav-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  font-size: 20px;
+  line-height: 1;
+  padding: 0;
+  background: rgba(45, 45, 45, 0.9);
+  border: 1px solid #4a4a4a;
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.6);
+  z-index: 5;
+}
+.viewer-nav-btn:hover { background-color: var(--accent-hover); border-color: var(--accent); color: #fff; }
+.viewer-nav-btn:disabled { opacity: 0.3; cursor: default; }
+.viewer-nav-prev { left: 12px; }
+.viewer-nav-next { right: 12px; }
+
 .viewer-splitter {
   width: 6px;
   flex: 0 0 6px;
@@ -402,14 +520,26 @@ body.viewer-resizing .viewer-splitter::after { background: var(--accent); }
 }
 .viewer-save-bar { gap: 6px; justify-content: flex-end; padding-top: 6px; }
 
-.viewer-bottom {
+.viewer-tags-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  justify-content: space-between;
+  gap: 4px;
   padding: 6px 12px 8px;
   border-top: 1px solid #2a2a2a;
+  max-height: 72px;
+  overflow-y: auto;
 }
-.viewer-tags { color: var(--accent); font-size: 12px; }
+/* Wygląd wzorowany na .tag-chip (editor.js), ale świadomie osobna klasa —
+   te chipy nie są tu klikalne (brak filtrowania po tagu, na razie). */
+.viewer-tag-chip {
+  background: #2a3a2a;
+  color: #a5d6a7;
+  border: 1px solid var(--accent);
+  border-radius: 10px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
 
 /* === Tag Manager === */
 .tag-manager { display: flex; flex-direction: column; height: 100%; box-sizing: border-box; }
