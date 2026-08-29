@@ -649,6 +649,9 @@ body.viewer-resizing .viewer-splitter::after { background: var(--accent); }
 .tm-item-active { background: #2e7d32; color: #fff; }
 .tm-info { color: #666; font-size: 11px; margin: 0; }
 .tm-actions, .tm-json-actions { display: flex; gap: 6px; }
+/* Picker "Scal z…" (runda dopieszczeń, 2026-08-28) — reużywa .tm-list/ */
+/* .tm-item, sam wrapper tylko dokłada odstęp pod polem filtra. */
+.tag-picker { display: flex; flex-direction: column; gap: 8px; min-width: 280px; }
 
 /* === Tagi: chipy (odpowiednik v2 QListWidget MultiSelection) === */
 .tag-section-label { font-size: 11px; color: #888; margin-top: 4px; }

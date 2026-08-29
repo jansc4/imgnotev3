@@ -109,24 +109,33 @@ function wireTagManagerEvents() {
     refreshTagList();
   });
 
-  document.getElementById("tm-merge").addEventListener("click", async () => {
+  document.getElementById("tm-merge").addEventListener("click", () => {
     if (!_tmSelectedTag) return;
-    const others = AppState.knownTags.filter((t) => t !== _tmSelectedTag);
-    const target = prompt(`Zastąp „${_tmSelectedTag}” tagiem (jeden z: ${others.join(", ")}):`);
-    if (!target || !others.includes(target.trim())) return;
-    const statusEl = document.getElementById("tm-status");
-    statusEl.textContent = "⏳ Scalam…";
-    showProgressModal("Scalam tagi…");
-    let res;
-    try {
-      res = await callApi("merge_tag", _tmSelectedTag, target.trim());
-    } finally {
-      hideProgressModal();
-    }
-    deselectTag();
-    statusEl.textContent = `✅ Scalono w ${res.changed} notatkach.`;
-    AppState.knownTags = await callApi("get_known_tags");
-    refreshTagList();
+    const source = _tmSelectedTag; // kopia — _tmSelectedTag zeruje się w deselectTag() po akcji
+    openTagPickerPopup({
+      title: `Scal „${source}” z…`,
+      excludeTag: source,
+      async onPick(target) {
+        const statusEl = document.getElementById("tm-status");
+        const count = await callApi("count_tag_usage", source);
+        const msg = `Scalisz „${source}” (${count} notatce/notatek) z „${target}”.\n`
+          + `Tag „${source}” zniknie, notatki dostaną „${target}”. Nie można cofnąć.\n\nKontynuować?`;
+        if (!confirm(msg)) return;
+
+        statusEl.textContent = "⏳ Scalam…";
+        showProgressModal("Scalam tagi…");
+        let res;
+        try {
+          res = await callApi("merge_tag", source, target);
+        } finally {
+          hideProgressModal();
+        }
+        deselectTag();
+        statusEl.textContent = `✅ Scalono w ${res.changed} notatkach.`;
+        AppState.knownTags = await callApi("get_known_tags");
+        refreshTagList();
+      },
+    });
   });
 
   document.getElementById("tm-delete").addEventListener("click", async () => {
@@ -160,5 +169,55 @@ function wireTagManagerJsonActions() {
     } catch (err) {
       statusEl.textContent = "❌ Błąd zapisu: " + err;
     }
+  });
+}
+
+// Wybór tagu przez klik zamiast prompt() (Jan, po teście na żywo: "stary
+// i brzydki interfejs, wypisane ucięte tagi, brak podpowiedzi" — dawny
+// prompt() dumpował całą listę tagów jako zwykły tekst w oknie systemowym,
+// a przy literówce w wpisanej nazwie handler po prostu cicho wychodził
+// (`if (!others.includes(...)) return;`) — klik, OK, i nic, bez żadnego
+// komunikatu. Stąd też wrażenie "nie wiem czy to bulk" — nie backend
+// kłamał (merge_tag naprawdę iteruje po WSZYSTKICH notatkach z tym
+// tagiem), tylko front czasem nie robił nic w ogóle, bez wyjaśnienia).
+//
+// Filtrowalna, klikalna lista — zero szans na literówkę, bo wybiera się
+// klikiem, nie wpisuje nazwy z pamięci.
+function openTagPickerPopup({ title, excludeTag, onPick }) {
+  let filter = "";
+
+  openPopup({
+    title: title || "Wybierz tag",
+    render(container) {
+      container.innerHTML = `
+        <div class="tag-picker">
+          <input id="tp-filter" class="editor-input" placeholder="Filtruj tagi…" autocomplete="off">
+          <div id="tp-list" class="tm-list"></div>
+        </div>
+      `;
+      const listEl = container.querySelector("#tp-list");
+      const filterEl = container.querySelector("#tp-filter");
+      filterEl.focus();
+
+      function renderList() {
+        const candidates = (AppState.knownTags || [])
+          .filter((t) => t !== excludeTag)
+          .filter((t) => t.toLowerCase().includes(filter.toLowerCase()));
+        listEl.innerHTML = candidates.length
+          ? candidates.map((t) => `<div class="tm-item" data-tag="${escapeAttr(t)}">${escapeHtml(t)}</div>`).join("")
+          : `<p class="tree-empty">Brak pasujących tagów.</p>`;
+        listEl.querySelectorAll(".tm-item").forEach((el) => {
+          el.addEventListener("click", () => {
+            closePopup(); // zamyka TYLKO ten picker (stos warstw) — Tag Manager pod spodem zostaje otwarty
+            onPick(el.dataset.tag);
+          });
+        });
+      }
+      filterEl.addEventListener("input", () => {
+        filter = filterEl.value;
+        renderList();
+      });
+      renderList();
+    },
   });
 }
