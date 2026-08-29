@@ -35,7 +35,8 @@ function openViewerPopup(folder, filepath) {
 
   openPopup({
     title: "Podgląd notatki",
-    wide: true,
+    fullscreen: true, // prawie cała wielkość appki (Jan) — dwie kolumny +
+                       // panel plików potrzebują realnej przestrzeni
     onClose: () => {
       _viewerPopupOpen = false;
     },
@@ -53,7 +54,6 @@ function openViewerPopup(folder, filepath) {
             <div class="toolbar-spacer"></div>
             <button id="v-toggle-edit" class="btn">✏️ Edytuj</button>
             <button id="v-edit-meta" class="btn">⚙️ Edytuj metadane</button>
-            <button id="v-delete" class="btn">🗑️ Usuń</button>
           </div>
           <div class="viewer-body">
             <div id="v-file-list" class="viewer-file-list"></div>
@@ -204,21 +204,6 @@ function wireViewerEvents() {
   document.getElementById("v-edit-meta").addEventListener("click", () => {
     const current = _viewerFiles[_viewerIdx];
     openEditorPopup(current.folder, current.filepath);
-  });
-
-  document.getElementById("v-delete").addEventListener("click", async () => {
-    const current = _viewerFiles[_viewerIdx];
-    if (!confirm(`Czy na pewno chcesz usunąć:\n${current.title}?`)) return;
-    try {
-      await callApi("delete_note", current.filepath);
-    } catch (err) {
-      alert("Błąd usuwania: " + err);
-      return;
-    }
-    _viewerFiles.splice(_viewerIdx, 1);
-    if (_viewerFiles.length === 0) { closePopup(); return; }
-    _viewerIdx = Math.min(_viewerIdx, _viewerFiles.length - 1);
-    await loadCurrentNote();
   });
 }
 

@@ -21,6 +21,7 @@
  *     render: (container) => { ...zbuduj DOM w container... },
  *     onClose: () => { ...opcjonalny cleanup... },
  *     wide: true, // opcjonalnie: szerszy .popup-box
+ *     fullscreen: true, // opcjonalnie: prawie cała wielkość appki (Viewer)
  *   });
  *   closePopup(); // zamyka TYLKO wierzchnią warstwę
  *   closeAllPopups(); // zamyka wszystkie naraz (rzadkie — patrz niżej)
@@ -33,14 +34,15 @@ function _popupEscapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function openPopup({ title, render, onClose, wide }) {
+function openPopup({ title, render, onClose, wide, fullscreen }) {
   const root = document.getElementById("popup-root");
   if (!root) return;
 
   const layer = document.createElement("div");
   layer.className = "popup-layer";
+  const boxClass = fullscreen ? " popup-box-fullscreen" : wide ? " popup-box-wide" : "";
   layer.innerHTML = `
-    <div class="popup-box${wide ? " popup-box-wide" : ""}">
+    <div class="popup-box${boxClass}">
       <div class="popup-header">
         <span class="popup-title">${_popupEscapeHtml(title || "")}</span>
         <button class="btn btn-icon popup-close-btn" title="Zamknij (Esc)">✕</button>
