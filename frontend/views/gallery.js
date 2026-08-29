@@ -240,19 +240,11 @@ function renderTreeNode(node) {
     ? `<span class="tree-toggle" data-path="${escapeAttr(node.path)}">${isExpanded ? "▾" : "▸"}</span>`
     : `<span class="tree-toggle tree-toggle-empty"></span>`;
   const active = node.path === AppState.currentFolder ? " tree-node-active" : "";
-  // Root folderów (AppState.rootFolders) nie da się usunąć przez
-  // delete_folder — trzeba je odpiąć przez remove_root_folder (inna
-  // operacja) — więc ikonka usuwania pojawia się tylko dla podfolderów.
-  const isRoot = AppState.rootFolders.includes(node.path);
-  const deleteHtml = isRoot
-    ? ""
-    : `<span class="tree-delete" data-path="${escapeAttr(node.path)}" title="Usuń folder">🗑</span>`;
   return `
     <div class="tree-item">
       <div class="tree-row">
         ${toggleHtml}
         <div class="tree-node${active}" data-path="${escapeAttr(node.path)}">${escapeHtml(node.name)}</div>
-        ${deleteHtml}
       </div>
       ${childrenHtml}
     </div>
