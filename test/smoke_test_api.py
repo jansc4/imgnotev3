@@ -419,6 +419,42 @@ def test_rename_move_folder_and_note():
         print("OK  move_note przenosi pojedynczą notatkę")
 
 
+def test_search_notes_returns_correct_folder():
+    """Bug zgłoszony przez Jana (2026-08-28): klik w kartę notatki z
+    wyników wyszukiwania czasem otwierał Viewer na PIERWSZEJ notatce w
+    vaulcie zamiast klikniętej — SearchEngine.search() zwracał surowy
+    folder_path pod kluczem "folder_path", nie "folder" (display_path),
+    więc front (gallery.js::folderOf) nie widział pola i spadał na
+    wadliwy fallback liczący folder z filepath (zawsze root_folder w V4,
+    bo pliki leżą płasko z losowym UUID). Notatka 2 poziomy głębiej —
+    dokładnie przypadek, w którym stary fallback się wysypywał."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        api = Api()
+        api.password = PASSWORD
+        api.root_folders.append(str(root))
+        api._setup_root(str(root))
+
+        klienci = api.create_subfolder(str(root), "Klienci")
+        firma_x = api.create_subfolder(klienci, "FirmaX")  # 2 poziomy głębiej niż root
+        api.save_note(firma_x, "Głęboko zagrzebana", "unikalna_tresc_do_wyszukania", ["projekt"])
+        api.save_note(str(root), "W roocie", "coś innego", ["projekt"])
+
+        results = api.search_notes("projekt", "")
+        assert len(results) == 2
+        by_title = {r["title"]: r for r in results}
+
+        assert "folder_path" not in by_title["Głęboko zagrzebana"], (
+            "search_notes nie powinien wyciekać surowego folder_path do frontu"
+        )
+        assert by_title["Głęboko zagrzebana"]["folder"] == firma_x, (
+            f"oczekiwano {firma_x!r}, dostano {by_title['Głęboko zagrzebana'].get('folder')!r} "
+            "— dokładnie ten bug, który zgłosił Jan"
+        )
+        assert by_title["W roocie"]["folder"] == str(root)
+        print("OK  search_notes zwraca poprawny display_path w polu 'folder' (nawet 2 poziomy głębiej)")
+
+
 if __name__ == "__main__":
     main()
     test_progress_pushed_during_setup_root()
@@ -427,3 +463,4 @@ if __name__ == "__main__":
     test_two_phase_login_fresh_vault()
     test_two_phase_login_existing_vault()
     test_rename_move_folder_and_note()
+    test_search_notes_returns_correct_folder()

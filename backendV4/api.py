@@ -555,13 +555,27 @@ class Api:
         po filtrze tagów (patrz backendV4/search_engine.py)."""
         results = []
         for root, mgr in self.index_managers.items():
+            fm = self.folder_managers[root]
             engine = SearchEngine(
                 mgr.index, root,
                 note_loader=lambda p: self.note_cache.get_full(
                     p, self.password or None, os.path.getmtime(p)
                 ).text,
             )
-            results.extend(engine.search(tag_query, text_query))
+            for r in engine.search(tag_query, text_query):
+                # SearchEngine zwraca surowy folder_path (nic nie wie o
+                # FolderManager — świadomie lean, patrz jego docstring).
+                # Front (gallery.js::folderOf) oczekuje pola "folder" jako
+                # PEŁNEGO display_path, tak jak z list_notes_in/
+                # list_all_notes/collect_viewer_files — bez tej podmiany
+                # note.folder było undefined, front spadał na wadliwy
+                # fallback (filepath.lastIndexOf("/")), który w V4 (płaskie
+                # pliki, losowe UUID) zawsze dawał root_folder. Efekt: klik
+                # w kartę notatki z wyszukiwania spoza roota/bezpośrednich
+                # podfolderów otwierał Viewer na złej notatce (Jan,
+                # 2026-08-28: "niektóre cardy pokazują pierwszy w vaulcie").
+                r["folder"] = fm.display_path(r.pop("folder_path"))
+                results.append(r)
         return results
 
     # ── Tagi ─────────────────────────────────────────────────────

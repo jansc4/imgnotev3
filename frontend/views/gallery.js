@@ -459,10 +459,16 @@ function toggleHomeSortBar(visible) {
 }
 
 function folderOf(note) {
-  if (note.folder) return note.folder;
-  const fp = note.filepath || "";
-  const i = fp.lastIndexOf("/");
-  return i === -1 ? "" : fp.slice(0, i);
+  // Dawny fallback (fp.lastIndexOf("/")) zakładał, że folder to katalog
+  // pliku na dysku — prawda w V3 (nazwa pliku = tytuł, w realnym
+  // podfolderze), fałsz w V4 (pliki płaskie w root_folder, losowy UUID —
+  // fallback zawsze dawał root_folder, niezależnie od realnego folderu
+  // notatki). Wszystkie ścieżki backendu (list_notes_in/list_all_notes/
+  // collect_viewer_files/search_notes) zwracają dziś "folder" wprost —
+  // fallback do AppState.currentFolder tylko na wypadek, gdyby jakaś
+  // przyszła ścieżka o tym zapomniała (bezpieczniejszy zgadywacz niż
+  // cichy, systematycznie zły).
+  return note.folder || AppState.currentFolder;
 }
 
 function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
