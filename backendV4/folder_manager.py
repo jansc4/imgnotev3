@@ -24,6 +24,7 @@ nie trafia do indeksu).
 import os
 
 from .index_manager import IndexManager
+from .natsort import natural_key
 
 
 class FolderManager:
@@ -80,14 +81,29 @@ class FolderManager:
                 node_by_path[acc] = node
                 node_by_path[parent_acc]["children"].append(node)
 
+        self._sort_children_recursive(root_node)
         return root_node
+
+    def _sort_children_recursive(self, node: dict) -> None:
+        """Naturalne, case-insensitive sortowanie (Jan, 2026-08-28:
+        "straciliśmy po drodze sortowanie w tree") — regres z porządków po
+        V4, gdzie backend/natsort.py skasowano jako rzekomo nieużywane,
+        nie zauważając że stary backend/api.py używał go WSZĘDZIE przy
+        budowie drzewa. Osobny przebieg PO zbudowaniu drzewa, nie poleganie
+        na kolejności sorted(leaf_paths) wyżej — ten drugi sortuje pełne
+        ścieżki jako stringi, co przez przypadek często daje poprawną
+        kolejność rodzeństwa, ale nie gwarantuje jej (i nigdy nie było
+        natural/case-insensitive)."""
+        node["children"].sort(key=lambda n: natural_key(n["name"]))
+        for child in node["children"]:
+            self._sort_children_recursive(child)
 
     # ---- notatki w folderze / zarządzanie pending -----------------------
 
     def list_notes_in(self, display_path: str) -> list[dict]:
         folder_path = self.to_folder_path(display_path)
         root = self.index_manager.root_folder
-        return [
+        notes = [
             {
                 "filepath": os.path.join(root, filename),
                 "title": entry["title"],
@@ -96,6 +112,11 @@ class FolderManager:
             for filename, entry in self.index_manager.index.notes.items()
             if entry["folder_path"] == folder_path
         ]
+        # Naturalne sortowanie po TYTULE (nie nazwie pliku — w V4 to losowy
+        # UUID, nie ma już żadnej treści; w V3 nazwa pliku BYŁA tytułem,
+        # więc dawne sortowanie po plikach de facto sortowało po tytule).
+        notes.sort(key=lambda n: natural_key(n["title"]))
+        return notes
 
     def create_folder(self, parent_display_path: str, name: str) -> str:
         name = name.strip().replace("/", "-").replace("\\", "-")
@@ -132,9 +153,12 @@ class FolderManager:
         """Wszystkie notatki w tym roocie, płasko (widok Home) — folder
         jako display_path, gotowe do zwrócenia na front. `mtime` dorzucone
         za darmo (już jest w indeksie) — sortowanie "najnowsze" we froncie
-        nie wymaga osobnego os.path.getmtime() na każdy plik."""
+        nie wymaga osobnego os.path.getmtime() na każdy plik. Domyślnie
+        posortowane naturalnie po tytule — front i tak potrafi przesortować
+        inaczej (alfabetycznie/datą/losowo, patrz home-sort-bar), ale to
+        sensowna baza zamiast nieokreślonej kolejności ze słownika."""
         root = self.index_manager.root_folder
-        return [
+        notes = [
             {
                 "filepath": os.path.join(root, filename),
                 "title": entry["title"],
@@ -143,11 +167,16 @@ class FolderManager:
             }
             for filename, entry in self.index_manager.index.notes.items()
         ]
+        notes.sort(key=lambda n: natural_key(n["title"]))
+        return notes
 
     def list_notes_in_and_direct_children(self, display_path: str) -> list[dict]:
         """Notatki w tym folderze ORAZ w jego bezpośrednich podfolderach
         (nie głębiej) — do nawigacji prev/next w Viewerze (port
-        collect_viewer_files, bez rekursji w głąb jak w oryginale)."""
+        collect_viewer_files, bez rekursji w głąb jak w oryginale).
+        Naturalne sortowanie po tytule — front tu NIE ma własnego
+        przełącznika sortowania (w odróżnieniu od Home), więc kolejność
+        z backendu jest ostateczna."""
         folder_path = self.to_folder_path(display_path)
         prefix = f"{folder_path}/" if folder_path else ""
         root = self.index_manager.root_folder
@@ -167,4 +196,5 @@ class FolderManager:
                     "title": entry["title"],
                     "folder": self.display_path(fp),
                 })
+        results.sort(key=lambda n: natural_key(n["title"]))
         return results

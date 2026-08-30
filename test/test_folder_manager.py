@@ -98,6 +98,40 @@ def test_tree_dedup_shared_prefix():
     print("OK  test_tree_dedup_shared_prefix")
 
 
+def test_tree_children_sorted_naturally():
+    """Jan, 2026-08-28: 'straciliśmy po drodze sortowanie w tree' —
+    regres z porządków po V4 (backend/natsort.py skasowany jako rzekomo
+    nieużywany). case-insensitive + liczby jako liczby, nie stringi."""
+    idx = _FakeIndexManager("/root", {
+        "a.imgnote": _entry("A", "zebra"),
+        "b.imgnote": _entry("B", "Apple"),   # wielka litera — musi wylądować obok apple, nie przed Z
+        "c.imgnote": _entry("C", "Folder10"),
+        "d.imgnote": _entry("D", "Folder2"), # naturalnie: 2 przed 10, nie leksykograficznie
+        "e.imgnote": _entry("E", "banana"),
+    })
+    fm = FolderManager(idx)
+    tree = fm.get_tree_root_node()
+    names = [c["name"] for c in tree["children"]]
+    assert names == ["Apple", "banana", "Folder2", "Folder10", "zebra"], names
+    print("OK  test_tree_children_sorted_naturally")
+
+
+def test_tree_children_sorted_naturally_at_every_level():
+    """Sortowanie musi działać na KAŻDYM poziomie drzewa, nie tylko na
+    korzeniu — rekurencyjny przebieg po zbudowaniu, nie efekt uboczny
+    sorted(leaf_paths) po pełnych ścieżkach."""
+    idx = _FakeIndexManager("/root", {
+        "a.imgnote": _entry("A", "Rodzic/Zeta"),
+        "b.imgnote": _entry("B", "Rodzic/alfa"),
+    })
+    fm = FolderManager(idx)
+    tree = fm.get_tree_root_node()
+    rodzic = tree["children"][0]
+    names = [c["name"] for c in rodzic["children"]]
+    assert names == ["alfa", "Zeta"], names
+    print("OK  test_tree_children_sorted_naturally_at_every_level")
+
+
 def test_list_notes_in_root():
     idx = _FakeIndexManager("/root", {
         "a.imgnote": _entry("A", ""),
@@ -230,11 +264,36 @@ def test_list_notes_in_and_direct_children():
     print("OK  test_list_notes_in_and_direct_children")
 
 
+def test_note_lists_sorted_naturally_by_title():
+    """Ten sam regres co w drzewie (Jan, 2026-08-28), ale dla list
+    notatek — w V3 nazwa pliku BYŁA tytułem, więc sortowanie po plikach
+    (nsorted_paths) de facto sortowało po tytule; w V4 nazwa pliku to
+    losowy UUID, więc odpowiednik musi jawnie sortować po polu title."""
+    idx = _FakeIndexManager("/root", {
+        "a.imgnote": _entry("Notatka 10", ""),
+        "b.imgnote": _entry("notatka 2", ""),
+        "c.imgnote": _entry("Alfa", ""),
+    })
+    fm = FolderManager(idx)
+
+    titles_in = [n["title"] for n in fm.list_notes_in("/root")]
+    assert titles_in == ["Alfa", "notatka 2", "Notatka 10"], titles_in
+
+    titles_all = [n["title"] for n in fm.list_all_notes()]
+    assert titles_all == ["Alfa", "notatka 2", "Notatka 10"], titles_all
+
+    titles_viewer = [n["title"] for n in fm.list_notes_in_and_direct_children("/root")]
+    assert titles_viewer == ["Alfa", "notatka 2", "Notatka 10"], titles_viewer
+    print("OK  test_note_lists_sorted_naturally_by_title")
+
+
 def main():
     test_tree_empty_when_no_folders()
     test_tree_single_level()
     test_tree_nested_creates_intermediate_nodes()
     test_tree_dedup_shared_prefix()
+    test_tree_children_sorted_naturally()
+    test_tree_children_sorted_naturally_at_every_level()
     test_list_notes_in_root()
     test_list_notes_in_subfolder()
     test_to_folder_path_rejects_foreign_root()
@@ -243,6 +302,7 @@ def main():
     test_real_index_manager_survives_reload_without_stale_reference()
     test_list_all_notes_flat_with_mtime()
     test_list_notes_in_and_direct_children()
+    test_note_lists_sorted_naturally_by_title()
     print("\nWszystkie testy przeszły.")
 
 
