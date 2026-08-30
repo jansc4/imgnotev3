@@ -72,10 +72,19 @@ function renderFolderTree() {
   const el = document.getElementById("folder-tree");
   const homeEl = document.getElementById("home-node");
   if (homeEl) {
-    homeEl.classList.toggle("tree-node-active", AppState.currentFolder === HOME_SENTINEL);
+    const homeActive = AppState.searchActive
+      ? !AppState.searchFolderFilter
+      : AppState.currentFolder === HOME_SENTINEL;
+    homeEl.classList.toggle("tree-node-active", homeActive);
   }
   renderBreadcrumb();
   if (!el) return;
+
+  if (AppState.searchActive) {
+    renderSearchFolderTree(el);
+    return;
+  }
+
   if (AppState.folderTree.length === 0) {
     el.innerHTML = `<p class="tree-empty">Brak folderów — root wybierany przy logowaniu.</p>`;
     return;
@@ -99,6 +108,62 @@ function renderFolderTree() {
       if (path) openFolderContextMenu(e, path);
     });
   });
+}
+
+// Tryb wyszukiwania (runda "drzewo w wyszukiwaniu", 2026-08-28, Jan: "w
+// tree jest wszystko zamiast zawartości folderu... wyszukiwanie wymaga
+// innej logiki tree") — pełna, nieprzycięta hierarchia myli przy wynikach
+// rozrzuconych po wielu folderach naraz. Tu: drzewo pokazuje TYLKO gałęzie
+// prowadzące do folderów z co najmniej jednym trafieniem. Klik na węźle
+// NIE nawiguje/nie czyści wyszukiwania (w odróżnieniu od zwykłego trybu)
+// — zawęża widoczne wyniki do tego folderu + podfolderów, zapytanie
+// zostaje aktywne. Menu kontekstowe zostaje dostępne (operacje działają
+// na realnym folderze niezależnie od trybu) — refreshFolderTree() po
+// operacji przelicza przycięte drzewo od nowa automatycznie.
+function renderSearchFolderTree(el) {
+  const matchedFolders = new Set(AppState.searchResults.map((n) => n.folder));
+  const pruned = AppState.folderTree
+    .map((root) => pruneTreeToMatches(root, matchedFolders))
+    .filter((n) => n !== null);
+
+  if (pruned.length === 0) {
+    el.innerHTML = `<p class="tree-empty">Brak folderów z wynikami.</p>`;
+    return;
+  }
+
+  el.innerHTML = pruned.map(renderTreeNode).join("");
+  el.querySelectorAll(".tree-node").forEach((node) => {
+    node.addEventListener("click", (e) => {
+      e.stopPropagation();
+      AppState.searchFolderFilter = node.dataset.path;
+      renderFolderTree();
+      applySearchResultsView();
+    });
+  });
+  el.querySelectorAll(".tree-toggle:not(.tree-toggle-empty)").forEach((toggle) => {
+    toggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleFolderExpanded(toggle.dataset.path);
+    });
+  });
+  el.querySelectorAll(".tree-row").forEach((row) => {
+    row.addEventListener("contextmenu", (e) => {
+      const path = row.querySelector(".tree-node")?.dataset.path;
+      if (path) openFolderContextMenu(e, path);
+    });
+  });
+}
+
+// Rekurencyjnie odcina gałęzie bez trafień. Węzeł zostaje jeśli SAM ma
+// trafienie (matchedFolders — dokładne ścieżki folderów z wynikami) LUB
+// ma choć jednego (przyciętego) potomka — przodkowie trafień więc
+// zostają automatycznie, bez osobnego liczenia łańcucha przodków.
+function pruneTreeToMatches(node, matchedFolders) {
+  const prunedChildren = node.children
+    .map((c) => pruneTreeToMatches(c, matchedFolders))
+    .filter((c) => c !== null);
+  if (!matchedFolders.has(node.path) && prunedChildren.length === 0) return null;
+  return { ...node, children: prunedChildren };
 }
 
 // Menu kontekstowe drzewa (krok 8, runda folder rename/move) — GŁÓWNY
@@ -232,14 +297,19 @@ function expandAncestors(path) {
 
 function renderTreeNode(node) {
   const hasChildren = node.children.length > 0;
-  const isExpanded = AppState.expandedFolders.has(node.path);
+  // W trybie wyszukiwania drzewo jest już przycięte do samych trafień —
+  // zawsze w pełni rozwinięte, żeby nie chować tego, co i tak jest istotne
+  // (bez tego użytkownik musiałby ręcznie rozklikiwać już przefiltrowane
+  // gałęzie).
+  const isExpanded = AppState.searchActive || AppState.expandedFolders.has(node.path);
   const childrenHtml = hasChildren && isExpanded
     ? `<div class="tree-children">${node.children.map(renderTreeNode).join("")}</div>`
     : "";
   const toggleHtml = hasChildren
     ? `<span class="tree-toggle" data-path="${escapeAttr(node.path)}">${isExpanded ? "▾" : "▸"}</span>`
     : `<span class="tree-toggle tree-toggle-empty"></span>`;
-  const active = node.path === AppState.currentFolder ? " tree-node-active" : "";
+  const activePath = AppState.searchActive ? AppState.searchFolderFilter : AppState.currentFolder;
+  const active = node.path === activePath ? " tree-node-active" : "";
   return `
     <div class="tree-item">
       <div class="tree-row">
@@ -598,8 +668,12 @@ async function onSearchChanged() {
   const statusEl = document.getElementById("search-status");
 
   if (!tagQuery && !textQuery) {
+    AppState.searchActive = false;
+    AppState.searchResults = [];
+    AppState.searchFolderFilter = null;
     statusEl.textContent = "";
     toggleHomeSortBar(AppState.currentFolder === HOME_SENTINEL);
+    renderFolderTree(); // wraca do pełnego, nieprzyciętego drzewa
     if (AppState.currentFolder === HOME_SENTINEL) await showHomeNotes();
     else if (AppState.currentFolder) await showFolderNotes(AppState.currentFolder);
     return;
@@ -608,12 +682,43 @@ async function onSearchChanged() {
   toggleHomeSortBar(false);
   statusEl.textContent = "🔍 Szukam…";
   const results = await callApi("search_notes", tagQuery, textQuery);
-  const count = results.length;
-  statusEl.textContent =
-    count === 0 ? "Brak wyników" :
-    count === 1 ? "1 wynik" :
-    count <= 4 ? `${count} wyniki` : `${count} wyników`;
-  renderNotesGrid(results, true);
+  AppState.searchActive = true;
+  AppState.searchResults = results;
+  AppState.searchFolderFilter = null; // nowe zapytanie = zaczynamy bez zawężenia
+  renderFolderTree(); // przycina drzewo do folderów z trafieniami
+  applySearchResultsView();
+}
+
+// Renderuje siatkę dla aktualnego stanu wyszukiwania — wszystkie wyniki
+// albo, jeśli wybrano folder w przyciętym drzewie, tylko te z niego i
+// jego podfolderów. Osobna funkcja od onSearchChanged, bo klik w drzewie
+// (renderSearchFolderTree) też musi to wywołać, bez ponownego pytania
+// backendu (wyniki już mamy w AppState.searchResults).
+function applySearchResultsView() {
+  const statusEl = document.getElementById("search-status");
+  const filter = AppState.searchFolderFilter;
+  let visible = filter
+    ? AppState.searchResults.filter((n) => n.folder === filter || n.folder.startsWith(filter + "/"))
+    : AppState.searchResults;
+
+  // Posortowane po folderze (potem tytule) — groupByFolder w renderNotesGrid
+  // wstawia nagłówek za każdym razem gdy folder się zmienia; bez sortowania
+  // ten sam folder mógłby pojawić się w kilku rozjechanych grupach.
+  visible = [...visible].sort((a, b) => {
+    const fc = a.folder.localeCompare(b.folder);
+    return fc !== 0 ? fc : a.title.localeCompare(b.title);
+  });
+
+  const count = visible.length;
+  const total = AppState.searchResults.length;
+  statusEl.textContent = filter
+    ? `${count} / ${total} w tym folderze`
+    : count === 0 ? "Brak wyników" :
+      count === 1 ? "1 wynik" :
+      count <= 4 ? `${count} wyniki` : `${count} wyników`;
+
+  AppState.notes = visible;
+  renderNotesGrid(visible, true, true); // groupByFolder=true — widać z jakiego folderu każdy wynik
 }
 
 function debouncedSearch() {
@@ -689,6 +794,14 @@ function hideSearchTagAutocomplete() {
 
 function wireGalleryEvents() {
   document.getElementById("home-node").addEventListener("click", async () => {
+    // Podczas wyszukiwania Home NIE wychodzi z trybu (to robi tylko ✕)
+    // — tylko czyści zawężenie do folderu, pokazując wszystkie wyniki.
+    if (AppState.searchActive) {
+      AppState.searchFolderFilter = null;
+      renderFolderTree();
+      applySearchResultsView();
+      return;
+    }
     await selectHome();
   });
 
@@ -727,6 +840,10 @@ function wireGalleryEvents() {
   document.getElementById("btn-clear-search").addEventListener("click", async () => {
     clearSearchInputs();
     hideSearchTagAutocomplete();
+    AppState.searchActive = false;
+    AppState.searchResults = [];
+    AppState.searchFolderFilter = null;
+    renderFolderTree(); // wraca do pełnego, nieprzyciętego drzewa
     toggleHomeSortBar(AppState.currentFolder === HOME_SENTINEL);
     if (AppState.currentFolder === HOME_SENTINEL) await showHomeNotes();
     else if (AppState.currentFolder) await showFolderNotes(AppState.currentFolder);

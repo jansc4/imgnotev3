@@ -13,6 +13,12 @@ const AppState = {
   homeSort: "folder", // sortowanie widoku Home: "folder" | "newest" | "random"
   knownTags: [],
   editingNote: null, // filepath edytowanej notatki (null = nowa)
+  // Tryb wyszukiwania (runda "drzewo w wyszukiwaniu", 2026-08-28) —
+  // drzewo w tym trybie pokazuje tylko gałęzie z trafieniami, nie całą
+  // hierarchię (Jan: "wyszukiwanie wymaga innej logiki tree").
+  searchActive: false,       // czy aktywne wyszukiwanie (tag/text niepuste)
+  searchResults: [],         // pełne, NIEzawężone wyniki ostatniego search_notes()
+  searchFolderFilter: null,  // wybrany w drzewie folder podczas wyszukiwania (null = wszystkie wyniki)
 };
 
 /** Wrapper na window.pywebview.api.* — rzuca czytelny błąd, jeśli API jeszcze nie gotowe. */
