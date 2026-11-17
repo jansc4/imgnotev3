@@ -14,10 +14,22 @@ Folder rename/move (Filar 3 w planie) świadomie poza zakresem tej wersji —
 dobudowywane później, na tym samym fundamencie.
 """
 import os
+import struct
+import sys
+import time
 
-from .image_note_file import ImageNoteFile
+from .errors import WrongPasswordError
+from .image_note_file import ImageNoteFile, TMP_SUFFIX
 from .index_file import IndexFile
 from .index_reconcile import reconcile, ReconcileResult
+
+
+def _is_orphan_tmp(entry) -> bool:
+    # nazwa z _atomic_write: "." + 32 hex + ".tmp"; starsze niż 60 s, by nie ruszyć zapisu w toku
+    name = entry.name
+    return (entry.is_file() and name.startswith(".") and name.endswith(TMP_SUFFIX)
+            and len(name) == 1 + 32 + len(TMP_SUFFIX)
+            and time.time() - entry.stat().st_mtime > 60)
 
 
 class IndexManager:
@@ -58,6 +70,12 @@ class IndexManager:
             for entry in it:
                 if entry.is_file() and entry.name.endswith(".imgnote"):
                     files[entry.name] = entry.stat().st_mtime
+                elif _is_orphan_tmp(entry):
+                    # pozostałość po przerwanym zapisie atomowym (.<32hex>.tmp)
+                    try:
+                        os.remove(entry.path)
+                    except OSError:
+                        pass
         return files
 
     # ---- start appki / reperacja ---------------------------------------
@@ -69,10 +87,18 @@ class IndexManager:
         jest ten "tani test hasła" z planu, zanim appka zdąży zrobić
         cokolwiek droższego."""
         index_path = os.path.join(self.root_folder, IndexFile.FILENAME)
+        index_loaded = False
         if os.path.exists(index_path):
-            self.index = IndexFile.load_from_file(index_path, password=self.password)
-            self.password_verified = True  # indeks się odszyfrował -> hasło poprawne
-        else:
+            try:
+                self.index = IndexFile.load_from_file(index_path, password=self.password)
+                self.password_verified = True  # indeks się odszyfrował -> hasło poprawne
+                index_loaded = True
+            except WrongPasswordError:
+                raise
+            except (ValueError, struct.error) as e:
+                # uszkodzony/podłożony indeks to tylko cache -> pełna odbudowa
+                print(f"[IndexManager] indeks odrzucony ({e}), odbudowa", file=sys.stderr)
+        if not index_loaded:
             self.index = IndexFile()
             # UWAGA: samo to NIE weryfikuje hasła. Jeśli poniżej okaże się,
             # że root_folder jest pusty, password_verified zostanie False
@@ -92,7 +118,15 @@ class IndexManager:
         total = len(to_process)
         for i, filename in enumerate(to_process, start=1):
             path = os.path.join(self.root_folder, filename)
-            note = ImageNoteFile.load_from_file(path, password=self.password)
+            try:
+                note = ImageNoteFile.load_from_file(path, password=self.password)
+            except WrongPasswordError:
+                raise
+            except (ValueError, struct.error) as e:
+                # uszkodzony/jawny plik nie blokuje startu — pomijamy go w indeksie
+                print(f"[IndexManager] pominięto {filename}: {e}", file=sys.stderr)
+                self.index.remove_note(filename)
+                continue
             self.password_verified = True  # udana deszyfracja = hasło poprawne
             mtime = files_on_disk[filename]
             self.index.set_note(filename, note.title, note.folder_path, mtime, note.tags)

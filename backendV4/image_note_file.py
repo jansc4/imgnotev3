@@ -24,6 +24,35 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .errors import WrongPasswordError
 
+TMP_SUFFIX = ".tmp"
+
+
+def _atomic_write(path: str, chunks) -> None:
+    # zapis do pliku tymczasowego + fsync + replace: crash nie zostawia uciętej notatki
+    directory = os.path.dirname(os.path.abspath(path))
+    tmp = os.path.join(directory, f".{uuid.uuid4().hex}{TMP_SUFFIX}")
+    try:
+        with open(tmp, "wb") as f:
+            for chunk in chunks:
+                f.write(chunk)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    except OSError:
+        pass
+
 
 class ImageNoteFile:
     MAGIC = b'IMNG'
@@ -123,21 +152,15 @@ class ImageNoteFile:
                 self.MAGIC, self.VERSION, flags,
                 len(iv), len(salt), len(gcm_tag), len(ciphertext)
             )
-            with open(path, "wb") as f:
-                f.write(header)
-                f.write(salt)        # 16 B
-                f.write(iv)          # 12 B
-                f.write(gcm_tag)     # 16 B
-                f.write(ciphertext)  # N B
+            # układ: header | salt 16B | iv 12B | tag 16B | ciphertext
+            _atomic_write(path, (header, salt, iv, gcm_tag, ciphertext))
         else:
             flags = 0x00
             header = struct.pack(
                 self.HEADER_FORMAT,
                 self.MAGIC, self.VERSION, flags, 0, 0, 0, len(payload)
             )
-            with open(path, "wb") as f:
-                f.write(header)
-                f.write(payload)
+            _atomic_write(path, (header, payload))
 
     # ---- odczyt ---------------------------------------------------------
 
@@ -145,6 +168,8 @@ class ImageNoteFile:
     def load_from_file(cls, path: str, password: str | None = None):
         with open(path, "rb") as f:
             header_data = f.read(cls.HEADER_SIZE)
+            if len(header_data) != cls.HEADER_SIZE:
+                raise ValueError("Plik uszkodzony: za krótki nagłówek.")
             (magic, version, flags,
              iv_len, salt_len, tag_len, enc_len) = struct.unpack(cls.HEADER_FORMAT, header_data)
 
@@ -160,6 +185,8 @@ class ImageNoteFile:
             is_encrypted = bool(flags & 0x01)
 
             if is_encrypted:
+                if (iv_len, salt_len, tag_len) != (12, 16, 16):
+                    raise ValueError("Plik uszkodzony: nieprawidłowe długości w nagłówku.")
                 salt = f.read(salt_len)         # 16 B
                 iv = f.read(iv_len)              # 12 B
                 gcm_tag = f.read(tag_len)        # 16 B
@@ -185,6 +212,11 @@ class ImageNoteFile:
                 title, folder_path, text, image_data, tags = cls._deserialize_payload(decrypted)
                 return cls(text, image_data, tags, title, folder_path, encrypted=True)
             else:
+                # ochrona przed podłożeniem jawnego pliku do zaszyfrowanego vaulta
+                if password:
+                    raise ValueError("Plik niezaszyfrowany w zaszyfrowanym vaultcie — odrzucony.")
                 payload = f.read(enc_len)
+                if len(payload) != enc_len:
+                    raise ValueError("Plik uszkodzony: niepełne dane.")
                 title, folder_path, text, image_data, tags = cls._deserialize_payload(payload)
                 return cls(text, image_data, tags, title, folder_path, encrypted=False)
