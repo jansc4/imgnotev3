@@ -27,6 +27,17 @@ let _editorSelectedTags = new Set(); // zaznaczone chipy do usunięcia (multi-se
 // z core.js (widok pod spodem zostaje aktywny), więc guard w wirePasteHandler
 // potrzebuje własnej flagi cyklu życia popupu.
 let _editorPopupOpen = false;
+// G8: migawka stanu formularza (porównanie przed zamknięciem); P4: obraz z otwarcia
+let _editorSnapshot = "";
+let _editorInitialImage = "";
+
+function editorStateKey() {
+  const title = document.getElementById("note-title")?.value ?? "";
+  const text = document.getElementById("note-text")?.value ?? "";
+  const img = _editorImageBase64 || "";
+  // obraz porównywany skrótowo (długość + końcówki) — pełny string bywa wielomegabajtowy
+  return [title, text, _editorTags.join("\u0001"), img.length, img.slice(0, 64), img.slice(-64)].join("\u0000");
+}
 
 function wireDragGuard() {
   if (_editorDragGuardHandlers) {
@@ -55,12 +66,19 @@ function openEditorPopup(folder, filepath) {
     onClose: () => {
       _editorPopupOpen = false;
     },
+    beforeClose: async () => {
+      if (!document.getElementById("note-title") || editorStateKey() === _editorSnapshot) return true;
+      return confirmPopup("Masz niezapisane zmiany w notatce. Zamknąć bez zapisu?", {
+        title: "Niezapisane zmiany", okLabel: "Zamknij bez zapisu", danger: true,
+      });
+    },
     async render(container) {
       let initial = { title: "", text: "", tags: [], image_base64: "" };
       if (isEdit) {
         initial = await callApi("get_note", filepath);
       }
       _editorImageBase64 = initial.image_base64 || "";
+      _editorInitialImage = _editorImageBase64;
 
       container.innerHTML = `
         <div class="editor">
@@ -85,7 +103,7 @@ function openEditorPopup(folder, filepath) {
               </div>
             </div>
             <div class="editor-right">
-              <input id="note-title" class="editor-input" placeholder="Tytuł notatki" value="${escapeAttr(initial.title)}">
+              <input id="note-title" class="editor-input" placeholder="Tytuł notatki" value="${escapeAttr(initial.title)}" autofocus>
               <div class="tag-section-header">
                 <label class="tag-section-label">Tagi: <span class="drop-hint">jeden tag lub lista: projekt, ważne, archiwum</span></label>
                 <label class="carry-tags-label" title="Po 'Zapisz i następna' tagi zostaną zachowane">
@@ -110,6 +128,7 @@ function openEditorPopup(folder, filepath) {
       _editorSelectedTags = new Set();
       renderTagChips();
       wireEditorEvents(folder, isEdit ? filepath : null);
+      _editorSnapshot = editorStateKey();
     },
   });
 }
@@ -421,7 +440,7 @@ async function importNoteFromClipboard(note) {
 
   const hasExistingContent =
     titleEl.value.trim() || textEl.value.trim() || _editorTags.length || _editorImageBase64;
-  if (hasExistingContent && !confirm("Formularz nie jest pusty. Zastąpić dane zaimportowaną notatką?")) {
+  if (hasExistingContent && !(await confirmPopup("Formularz nie jest pusty. Zastąpić dane zaimportowaną notatką?", { okLabel: "Zastąp" }))) {
     return;
   }
 
@@ -533,7 +552,7 @@ async function importTextResult(fetchFn, textEl, statusEl) {
   statusEl.textContent = "⏳ Importuję tekst…";
   try {
     const { text, info } = await fetchFn();
-    if (textEl.value.trim() && !confirm("Pole tekstu nie jest puste. Zastąpić treść?")) {
+    if (textEl.value.trim() && !(await confirmPopup("Pole tekstu nie jest puste. Zastąpić treść?", { okLabel: "Zastąp" }))) {
       return;
     }
     textEl.value = text;
@@ -592,10 +611,14 @@ function wireEditorEvents(folder, originalFilepath) {
     }
 
     statusEl.textContent = "⏳ Zapisuję…";
+    // P4: przy edycji niezmieniony obraz nie jedzie mostem — null = "bez zmian" po stronie Pythona
+    const image = currentOriginalFilepath && _editorImageBase64 === _editorInitialImage
+      ? null : _editorImageBase64;
     try {
       await callApi(
-        "save_note", folder, title, text, _editorTags, _editorImageBase64, currentOriginalFilepath
+        "save_note", folder, title, text, _editorTags, image, currentOriginalFilepath
       );
+      _editorSnapshot = editorStateKey();
       return true;
     } catch (err) {
       statusEl.textContent = "❌ Błąd zapisu: " + err;
@@ -632,6 +655,8 @@ function wireEditorEvents(folder, originalFilepath) {
     _editorTags = keepTags ? [..._editorTags] : [];
     _editorSelectedTags = new Set();
     renderTagChips();
+    _editorInitialImage = "";
+    _editorSnapshot = editorStateKey(); // pusty formularz = brak niezapisanych zmian
 
     document.getElementById("editor-status").textContent = "✅ Zapisano. Dodaj kolejną notatkę.";
     document.getElementById("note-title").focus();

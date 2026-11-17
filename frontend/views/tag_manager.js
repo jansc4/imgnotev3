@@ -90,7 +90,7 @@ function wireTagManagerEvents() {
 
   document.getElementById("tm-rename").addEventListener("click", async () => {
     if (!_tmSelectedTag) return;
-    const newName = prompt(`Nowa nazwa dla „${_tmSelectedTag}”:`, _tmSelectedTag);
+    const newName = await promptPopup(`Nowa nazwa dla „${_tmSelectedTag}”:`, _tmSelectedTag, { title: "Zmień nazwę taga", okLabel: "Zmień" });
     if (!newName || !newName.trim() || newName.trim() === _tmSelectedTag) return;
     const statusEl = document.getElementById("tm-status");
     statusEl.textContent = "⏳ Zmieniam nazwę…";
@@ -120,7 +120,7 @@ function wireTagManagerEvents() {
         const count = await callApi("count_tag_usage", source);
         const msg = `Scalisz „${source}” (${count} notatce/notatek) z „${target}”.\n`
           + `Tag „${source}” zniknie, notatki dostaną „${target}”. Nie można cofnąć.\n\nKontynuować?`;
-        if (!confirm(msg)) return;
+        if (!(await confirmPopup(msg, { title: "Scal tagi", okLabel: "Scal", danger: true }))) return;
 
         statusEl.textContent = "⏳ Scalam…";
         showProgressModal("Scalam tagi…");
@@ -140,7 +140,7 @@ function wireTagManagerEvents() {
 
   document.getElementById("tm-delete").addEventListener("click", async () => {
     if (!_tmSelectedTag) return;
-    if (!confirm(`Usunąć „${_tmSelectedTag}” ze wszystkich notatek?\nNie można cofnąć.`)) return;
+    if (!(await confirmPopup(`Usunąć „${_tmSelectedTag}” ze wszystkich notatek?\nNie można cofnąć.`, { title: "Usuń tag", okLabel: "Usuń", danger: true }))) return;
     const statusEl = document.getElementById("tm-status");
     statusEl.textContent = "⏳ Usuwam…";
     showProgressModal("Usuwam tag…");

@@ -228,14 +228,14 @@ function openFolderContextMenu(event, path) {
     {
       label: "📁 Nowy podfolder",
       onClick: async () => {
-        const name = prompt(`Nazwa podfolderu w:\n${path}`);
+        const name = await promptPopup(`Nazwa podfolderu w:\n${path}`, "", { title: "Nowy podfolder", okLabel: "Utwórz" });
         if (!name || !name.trim()) return;
         try {
           const newPath = await callApi("create_subfolder", path, name);
           await refreshFolderTree();
           await selectFolder(newPath);
         } catch (e) {
-          alert("Nie można utworzyć folderu:\n" + e);
+          toast("Nie można utworzyć folderu:\n" + e, "error");
         }
       },
     },
@@ -246,7 +246,7 @@ function openFolderContextMenu(event, path) {
         label: "✏️ Zmień nazwę",
         onClick: async () => {
           const currentName = basename(path);
-          const newName = prompt(`Nowa nazwa dla „${currentName}”:`, currentName);
+          const newName = await promptPopup(`Nowa nazwa dla „${currentName}”:`, currentName, { title: "Zmień nazwę folderu", okLabel: "Zmień" });
           if (!newName || !newName.trim() || newName.trim() === currentName) return;
           try {
             const newPath = await callApi("rename_folder", path, newName.trim());
@@ -257,7 +257,7 @@ function openFolderContextMenu(event, path) {
               await refreshCurrentGridView(); // np. podfolder-kafelek w widoku rodzica
             }
           } catch (e) {
-            alert("Nie można zmienić nazwy:\n" + e);
+            toast("Nie można zmienić nazwy:\n" + e, "error");
           }
         },
       },
@@ -277,7 +277,7 @@ function openFolderContextMenu(event, path) {
                   await refreshCurrentGridView();
                 }
               } catch (e) {
-                alert("Nie można przenieść folderu:\n" + e);
+                toast("Nie można przenieść folderu:\n" + e, "error");
               }
             },
           });
@@ -295,20 +295,20 @@ async function deleteFolderWithConfirm(path) {
   try {
     count = await callApi("count_notes_in_folder", path);
   } catch (err) {
-    alert("Błąd odczytu zawartości folderu: " + err);
+    toast("Błąd odczytu zawartości folderu: " + err, "error");
     return;
   }
   const name = basename(path);
   const msg = count > 0
     ? `Usuniesz "${name}" i ${count} notatek wewnątrz (razem z podfolderami). Tej operacji nie da się cofnąć.\n\nNa pewno?`
     : `Folder "${name}" jest pusty. Usunąć go?`;
-  if (!confirm(msg)) return;
+  if (!(await confirmPopup(msg, { title: "Usuń folder", okLabel: "Usuń", danger: true }))) return;
 
   showProgressModal("Usuwam folder…");
   try {
     await callApi("delete_folder", path);
   } catch (err) {
-    alert("Błąd usuwania folderu: " + err);
+    toast("Błąd usuwania folderu: " + err, "error");
     return;
   } finally {
     hideProgressModal();
@@ -491,7 +491,7 @@ function openNoteContextMenu(event, filepath, currentFolder) {
               await callApi("move_note", filepath, destination);
               await refreshCurrentGridView();
             } catch (e) {
-              alert("Nie można przenieść notatki:\n" + e);
+              toast("Nie można przenieść notatki:\n" + e, "error");
             }
           },
         });
@@ -504,12 +504,12 @@ function openNoteContextMenu(event, filepath, currentFolder) {
       onClick: async () => {
         const note = AppState.notes.find((n) => n.filepath === filepath);
         const title = note ? note.title : "tę notatkę";
-        if (!confirm(`Czy na pewno chcesz usunąć:\n${title}?`)) return;
+        if (!(await confirmPopup(`Czy na pewno chcesz usunąć:\n${title}?`, { title: "Usuń notatkę", okLabel: "Usuń", danger: true }))) return;
         try {
           await callApi("delete_note", filepath);
           await refreshCurrentGridView();
         } catch (e) {
-          alert("Błąd usuwania: " + e);
+          toast("Błąd usuwania: " + e, "error");
         }
       },
     },
@@ -608,7 +608,7 @@ function openExportPopup(filepaths) {
           await callApi("export_notes", filepaths, outputFolder, format);
           clearSelection();
         } catch (e) {
-          alert("Błąd eksportu:\n" + e);
+          toast("Błąd eksportu:\n" + e, "error");
         } finally {
           hideProgressModal();
         }
@@ -676,7 +676,7 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
     html += subfolders
       .map(
         (sf) => `
-      <div class="thumb-card folder-tile" data-folder-path="${escapeAttr(sf.path)}" title="${escapeAttr(sf.name)}">
+      <div class="thumb-card folder-tile" data-folder-path="${escapeAttr(sf.path)}" title="${escapeAttr(sf.name)}" tabindex="0" role="button">
         <div class="thumb-img">📁</div>
         <div class="thumb-title">${escapeHtml(sf.name)}</div>
       </div>
@@ -692,7 +692,7 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
       html += `<div class="folder-group-header">📁 ${escapeHtml(n.folder)}</div>`;
     }
     html += `
-      <div class="thumb-card" data-filepath="${escapeAttr(n.filepath)}" data-folder="${escapeAttr(folderOf(n))}" data-idx="${i}">
+      <div class="thumb-card" data-filepath="${escapeAttr(n.filepath)}" data-folder="${escapeAttr(folderOf(n))}" data-idx="${i}" tabindex="0" role="button" aria-label="${escapeAttr(n.title)}">
         <div class="thumb-img" id="thumb-${i}">🖼️</div>
         <div class="thumb-title">${escapeHtml(n.title)}</div>
       </div>
@@ -707,6 +707,15 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
   const itemEls = Array.from(el.querySelectorAll(".thumb-card"));
   itemEls.forEach((tile, idx) => {
     const isFolder = tile.classList.contains("folder-tile");
+
+    // G5: Enter/Spacja = klik (z zachowaniem Ctrl/Shift do zaznaczania)
+    tile.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      tile.dispatchEvent(new MouseEvent("click", {
+        bubbles: true, ctrlKey: e.ctrlKey, shiftKey: e.shiftKey, metaKey: e.metaKey,
+      }));
+    });
 
     tile.addEventListener("click", async (e) => {
       if (e.ctrlKey || e.metaKey) {
@@ -819,18 +828,27 @@ async function loadOneThumbnail(card, gen) {
 let _searchDebounce = null;
 
 function clearSearchInputs() {
+  _searchToken++; // ewentualne wyszukiwanie w toku przestaje być aktualne
   const tagEl = document.getElementById("search-tag");
   const textEl = document.getElementById("search-text");
   const statusEl = document.getElementById("search-status");
   if (tagEl) tagEl.value = "";
   if (textEl) textEl.value = "";
-  if (statusEl) statusEl.textContent = "";
+  if (statusEl) {
+    statusEl.textContent = "";
+    statusEl.classList.remove("busy");
+  }
 }
 
+// G10: token zapytania — spóźniona odpowiedź starszego wyszukiwania nie nadpisze nowszej
+let _searchToken = 0;
+
 async function onSearchChanged() {
+  const token = ++_searchToken;
   const tagQuery = document.getElementById("search-tag").value.trim();
   const textQuery = document.getElementById("search-text").value.trim();
   const statusEl = document.getElementById("search-status");
+  statusEl.classList.remove("busy");
 
   if (!tagQuery && !textQuery) {
     AppState.searchActive = false;
@@ -845,8 +863,20 @@ async function onSearchChanged() {
   }
 
   toggleHomeSortBar(false);
-  statusEl.textContent = "🔍 Szukam…";
-  const results = await callApi("search_notes", tagQuery, textQuery);
+  statusEl.textContent = "Szukam…";
+  statusEl.classList.add("busy");
+  let results;
+  try {
+    results = await callApi("search_notes", tagQuery, textQuery);
+  } catch (err) {
+    if (token !== _searchToken) return;
+    statusEl.classList.remove("busy");
+    statusEl.textContent = "Błąd wyszukiwania";
+    toast("Błąd wyszukiwania: " + err, "error");
+    return;
+  }
+  if (token !== _searchToken || !statusEl.isConnected) return; // nowsze zapytanie w toku
+  statusEl.classList.remove("busy");
   AppState.searchActive = true;
   AppState.searchResults = results;
   AppState.searchFolderFilter = null; // nowe zapytanie = zaczynamy bez zawężenia
@@ -1002,7 +1032,7 @@ function wireGalleryEvents() {
 
   document.getElementById("btn-add-note").addEventListener("click", () => {
     if (AppState.currentFolder === HOME_SENTINEL) {
-      alert("Wybierz konkretny folder z drzewa po lewej, żeby dodać notatkę.");
+      toast("Wybierz konkretny folder z drzewa po lewej, żeby dodać notatkę.", "info");
       return;
     }
     openEditorPopup(AppState.currentFolder, null);

@@ -46,6 +46,22 @@ function escapeHtml(s) {
 }
 const escapeAttr = escapeHtml;
 
+// ── G6: jeden router Escape — obsługuje tylko najwyższa warstwa ─────
+// Faza capture na document + stopPropagation: listenery widoków (np. czyszczenie
+// zaznaczenia w galerii) dostają Esc tylko, gdy nie ma nad nimi menu ani popupu.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  if (typeof _ctxMenuEl !== "undefined" && _ctxMenuEl) {
+    closeContextMenu();
+  } else if (typeof _popupStack !== "undefined" && _popupStack.length > 0) {
+    requestClosePopup();
+  } else {
+    return;
+  }
+  e.preventDefault();
+  e.stopPropagation();
+}, true);
+
 // ── S7: blokada sesji ───────────────────────────────────────────────
 let _lastActivity = Date.now();
 let _locking = false;

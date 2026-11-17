@@ -45,6 +45,14 @@ function openViewerPopup(folder, filepath) {
       _viewerLoadToken++;
       revokeViewerImage();
     },
+    // G8: niezapisana edycja inline nie znika po Esc / kliknięciu w tło
+    beforeClose: async () => {
+      const ed = document.getElementById("v-md-editor");
+      if (!_viewerEditMode || !ed || ed.value === _viewerCurrentText) return true;
+      return confirmPopup("Masz niezapisane zmiany w treści. Zamknąć bez zapisu?", {
+        title: "Niezapisane zmiany", okLabel: "Zamknij bez zapisu", danger: true,
+      });
+    },
     async render(container) {
       _viewerFiles = await callApi("collect_viewer_files", folder);
       if (_viewerFiles.length === 0) _viewerFiles = [{ filepath, title: "", folder }];
@@ -211,7 +219,7 @@ async function saveInlineEdit() {
     document.getElementById("v-md-view").innerHTML = res.html;
     discardEdit();
   } catch (err) {
-    alert("Błąd zapisu: " + err);
+    toast("Błąd zapisu: " + err, "error");
   }
 }
 

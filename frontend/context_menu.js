@@ -29,11 +29,12 @@ function openContextMenu(event, items) {
 
   const menu = document.createElement("div");
   menu.className = "context-menu";
+  menu.setAttribute("role", "menu");
   menu.innerHTML = items
     .map((item, i) =>
       item.separator
         ? `<div class="context-menu-sep"></div>`
-        : `<div class="context-menu-item${item.danger ? " context-menu-item-danger" : ""}" data-i="${i}">${escapeHtml(item.label)}</div>`
+        : `<div class="context-menu-item${item.danger ? " context-menu-item-danger" : ""}" data-i="${i}" role="menuitem" tabindex="-1">${escapeHtml(item.label)}</div>`
     )
     .join("");
   document.body.appendChild(menu);
@@ -60,8 +61,18 @@ function openContextMenu(event, items) {
   const outsideClick = (e) => {
     if (!menu.contains(e.target)) closeContextMenu();
   };
+  // Escape: router w core.js (G6); tu tylko nawigacja strzałkami/Enter (G5)
   const keydown = (e) => {
-    if (e.key === "Escape") closeContextMenu();
+    const els = Array.from(menu.querySelectorAll(".context-menu-item"));
+    const i = els.indexOf(document.activeElement);
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const next = e.key === "ArrowDown" ? (i + 1) % els.length : (i - 1 + els.length) % els.length;
+      els[next]?.focus();
+    } else if (e.key === "Enter" && i >= 0) {
+      e.preventDefault();
+      els[i].click();
+    }
   };
   const scroll = () => closeContextMenu();
 

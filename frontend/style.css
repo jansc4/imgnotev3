@@ -709,3 +709,21 @@ body.viewer-resizing .viewer-splitter::after { background: var(--accent); }
 }
 .tag-autocomplete-item { padding: 6px 10px; font-size: 13px; cursor: pointer; }
 .tag-autocomplete-item:hover { background: var(--accent-hover); color: #a5d6a7; }
+
+/* === Etap 4 audytu: fokus (G5), okna dialogowe (G4), toast (G9) === */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.context-menu-item:focus { background: var(--accent-hover); outline: none; }
+
+.dialog-message { color: var(--text); font-size: 13px; white-space: pre-line; margin: 0 0 12px; min-width: 300px; max-width: 520px; line-height: 1.5; }
+.dialog-input { width: 100%; box-sizing: border-box; margin-bottom: 12px; }
+.dialog-buttons { display: flex; justify-content: flex-end; gap: 8px; }
+.btn-danger { background-color: #c62828; color: #fff; border-color: #c62828; }
+.btn-danger:hover { background-color: #a31f1f; }
+
+.toast-host { position: fixed; right: 16px; bottom: 16px; z-index: 1100; display: flex; flex-direction: column; gap: 8px; max-width: 420px; }
+.toast { background: var(--bg-panel); color: var(--text); border: 1px solid #3a3a3a; border-left: 4px solid var(--accent); border-radius: 6px; padding: 10px 14px; font-size: 13px; white-space: pre-line; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); cursor: pointer; }
+.toast-error { border-left-color: #e53935; }
+.toast-info { border-left-color: #64b5f6; }
+
+/* G10: wskaźnik pracy wyszukiwania */
+.search-status.busy::before { content: "⏳ "; }

@@ -87,6 +87,84 @@ def run():
         time.sleep(0.5)
         check("XSS nie wykonany", not js("window.__xss === 1"))
         js("closePopup(); 1")
+
+        # ── etap 4 ──
+        esc = "document.activeElement.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true})); 1"
+        # G6: Esc zamyka tylko popup, zaznaczenie w galerii zostaje
+        js("(()=>{const c=document.querySelector('.thumb-card:not(.folder-tile)'); c.dispatchEvent(new MouseEvent('click',{bubbles:true,ctrlKey:true}));})(); 1")
+        check("zaznaczenie Ctrl+klik", wait_for("AppState.selectedNotes.size === 1", 5))
+        js("document.querySelectorAll('.thumb-card:not(.folder-tile)')[1].click(); 1")
+        check("viewer otwarty", wait_for("_popupStack.length === 1 && !!document.querySelector('#v-md-view table')", 10))
+        check("G5 fokus w popupie", bool(js("!!document.activeElement.closest('.popup-layer')")))
+        js(esc)
+        check("G6 Esc zamknął popup", wait_for("_popupStack.length === 0", 5))
+        check("G6 zaznaczenie przetrwało Esc", bool(js("AppState.selectedNotes.size === 1")))
+        js(esc)
+        check("G6 drugi Esc czyści zaznaczenie", wait_for("AppState.selectedNotes.size === 0", 5))
+
+        # G5: Enter na karcie otwiera viewer; G8: niezapisana edycja pyta przed zamknięciem
+        js("(()=>{const c=document.querySelectorAll('.thumb-card:not(.folder-tile)')[2]; c.focus(); c.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));})(); 1")
+        check("G5 Enter na karcie", wait_for("_popupStack.length === 1 && !!document.querySelector('#v-md-view table')", 10))
+        js("toggleEdit(); document.getElementById('v-md-editor').value += ' zmiana'; 1")
+        js(esc)
+        check("G8 pytanie o niezapisane zmiany", wait_for("_popupStack.length === 2 && !!document.querySelector('.dialog-ok')", 5))
+        js(esc)  # Esc w pytaniu = anuluj
+        check("G8 anuluj zostawia viewer", wait_for("_popupStack.length === 1", 5) and bool(js("_viewerEditMode === true")))
+        js(esc)
+        wait_for("_popupStack.length === 2", 5)
+        js("document.querySelector('.dialog-ok').click(); 1")  # Zamknij bez zapisu
+        check("G8 potwierdzenie zamyka", wait_for("_popupStack.length === 0", 5))
+
+        # G4: confirmPopup / promptPopup
+        js("window.__c=null; confirmPopup('Test?').then(v=>window.__c=v); 1")
+        wait_for("!!document.querySelector('.dialog-ok')", 5)
+        js("document.querySelector('.dialog-ok').click(); 1")
+        check("G4 confirmPopup -> true", wait_for("window.__c === true", 5))
+        js("window.__p=undefined; promptPopup('Nazwa?', 'abc').then(v=>window.__p=v); 1")
+        wait_for("!!document.querySelector('.dialog-input')", 5)
+        js("const i=document.querySelector('.dialog-input'); i.value='xyz'; i.dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true})); 1")
+        check("G4 promptPopup Enter -> wartość", wait_for("window.__p === 'xyz'", 5))
+        js("window.__p=undefined; promptPopup('Nazwa?', 'abc').then(v=>window.__p=v); 1")
+        wait_for("!!document.querySelector('.dialog-input')", 5)
+        js(esc)
+        check("G4 promptPopup Esc -> null", wait_for("window.__p === null", 5))
+        js("toast('test', 'error'); 1")
+        check("G9 toast", bool(js("!!document.querySelector('.toast.toast-error')")))
+
+        # G10: wyszukiwanie po tagu
+        js("const t=document.getElementById('search-tag'); t.value='t0'; t.dispatchEvent(new Event('input',{bubbles:true})); 1")
+        check("G10 wyniki wyszukiwania", wait_for("document.getElementById('search-status').textContent.includes('wynik') && document.querySelectorAll('.thumb-card:not(.folder-tile)').length === 4", 10))
+        check("G10 brak wskaźnika po zakończeniu", bool(js("!document.getElementById('search-status').classList.contains('busy')")))
+
+        # Edytor: G8 (bez zmian zamyka od razu, ze zmianą pyta), P4 (zapis bez zmiany obrazu go zachowuje)
+        ed_fp = paths[5]
+        ed_folder = js(f"(_viewerFiles.find(f=>f.filepath==={json.dumps(ed_fp)})||{{}}).folder") or js("AppState.notes[0].folder")
+        js(f"openEditorPopup({json.dumps(ed_folder)}, {json.dumps(ed_fp)}); 1")
+        check("edytor otwarty", wait_for("!!document.getElementById('note-title') && document.getElementById('note-title').value !== ''", 10))
+        check("edytor: fokus na tytule", bool(js("document.activeElement && document.activeElement.id === 'note-title'")))
+        js(esc)
+        check("edytor bez zmian zamyka się od razu", wait_for("_popupStack.length === 0", 5))
+        js(f"openEditorPopup({json.dumps(ed_folder)}, {json.dumps(ed_fp)}); 1")
+        wait_for("!!document.getElementById('note-title') && document.getElementById('note-title').value !== ''", 10)
+        js("document.getElementById('note-title').value = 'Zmieniony tytuł'; 1")
+        js(esc)
+        check("edytor ze zmianą pyta", wait_for("_popupStack.length === 2", 5))
+        js(esc)
+        wait_for("_popupStack.length === 1", 5)
+        img_before = api.get_note(ed_fp)["image_base64"]
+        js("document.getElementById('btn-save').click(); 1")
+        check("edytor zapisał", wait_for("_popupStack.length === 0", 10))
+        after = api.get_note(ed_fp)
+        check("P4 edytor: tytuł zmieniony, obraz zachowany", after["title"] == "Zmieniony tytuł" and after["image_base64"] == img_before and len(img_before) > 100)
+
+        # S7: blokada sesji i ponowne wejście
+        js("document.getElementById('btn-lock').click(); 1")
+        check("S7 widok logowania po blokadzie", wait_for("_currentView === 'login'", 10))
+        check("S7 backend zapomniał hasło", api._password == "" and not api._index_managers)
+        check("S7 folder podstawiony", bool(js(f"document.getElementById('login-folder-path').textContent === {json.dumps(root)}")))
+        js(f"document.getElementById('login-pw').value={json.dumps(PW)}; document.getElementById('login-btn').click(); 1")
+        check("S7 ponowne logowanie", wait_for("_currentView === 'gallery'", 20))
+
         errs = js("window.__errs") or []
         check(f"brak błędów JS/CSP {errs}", len(errs) == 0)
     except Exception as e:  # noqa: BLE001
