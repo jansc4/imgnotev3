@@ -13,3 +13,7 @@ wheels/
 MIGRATION_PLAN.md
 V4_REDESIGN_PLAN.md
 .git_commit_msg_tmp.txt
+
+# zrzuty pamięci (mogą zawierać hasło i odszyfrowane dane)
+/core
+/core.[0-9]*
