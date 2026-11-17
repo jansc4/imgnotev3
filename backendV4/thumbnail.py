@@ -16,6 +16,9 @@ import io
 from PIL import Image
 
 MAX_DIMENSION = 320  # siatka wyświetla 140px, zapas na ekrany retina
+# S8: bomba dekompresyjna -> brak miniatury zamiast GB RAM (100 MPx starcza na aparaty)
+MAX_PIXELS = 100_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
 def generate_thumbnail(image_data: bytes) -> bytes | None:
@@ -26,7 +29,10 @@ def generate_thumbnail(image_data: bytes) -> bytes | None:
         return None
 
     try:
-        img = Image.open(io.BytesIO(image_data))
+        img = Image.open(io.BytesIO(image_data))  # czyta tylko nagłówek
+        # sprawdzenie przed dekodowaniem; bez warnings.catch_warnings (nie jest thread-safe)
+        if img.width * img.height > MAX_PIXELS:
+            return None
         img.load()  # wymusza pełne zdekodowanie TERAZ, w try/except, nie leniwie później
     except Exception:
         return None

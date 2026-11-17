@@ -180,7 +180,9 @@ def test_put_full_hydrates_without_any_decryption():
     print("OK  test_put_full_hydrates_without_any_decryption")
 
 
-def test_get_full_generates_thumbnail_for_real_image():
+def test_get_thumbnail_lazy_for_real_image():
+    """P1: get_full nie generuje miniatury, robi to dopiero get_thumbnail
+    (raz — drugie wywołanie ze złym hasłem idzie z cache)."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         png = _png_bytes(400, 300)
@@ -188,10 +190,12 @@ def test_get_full_generates_thumbnail_for_real_image():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        result = cache.get_full(str(path), PASSWORD, mtime)
-        assert result.thumbnail_data is not None
-        assert len(result.thumbnail_data) < len(png)
-    print("OK  test_get_full_generates_thumbnail_for_real_image")
+        full = cache.get_full(str(path), PASSWORD, mtime)
+        assert full.thumbnail_data is None and full.image_data == png
+        thumb = cache.get_thumbnail(str(path), PASSWORD, mtime)
+        assert thumb is not None and len(thumb) < len(png)
+        assert cache.get_thumbnail(str(path), "zle_haslo", mtime) == thumb
+    print("OK  test_get_thumbnail_lazy_for_real_image")
 
 
 def test_thumbnail_none_when_note_has_no_image():
@@ -201,22 +205,42 @@ def test_thumbnail_none_when_note_has_no_image():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        result = cache.get_full(str(path), PASSWORD, mtime)
-        assert result.thumbnail_data is None
+        assert cache.get_thumbnail(str(path), PASSWORD, mtime) is None
+        # notatka bez obrazu nie wymusza ponownego deszyfrowania w get_full
+        assert cache.get_full(str(path), "zle_haslo", mtime).image_data == b""
     print("OK  test_thumbnail_none_when_note_has_no_image")
 
 
-def test_put_full_also_generates_thumbnail():
-    """Darmowa hydratacja (z IndexManagera/save_note) też dostaje miniaturę
-    — nie tylko get_full. To dokładnie ten punkt z planu: pełne bajty
-    obrazka i tak są w pamięci, koszt to tylko resize."""
+def test_put_full_with_thumbnail_keeps_no_image():
+    """Reperacja (keep_image=False, with_thumbnail=True): miniatura gotowa,
+    pełny obraz nie zajmuje budżetu — get_full odszyfruje go od nowa."""
     png = _png_bytes(500, 500)
     note = ImageNoteFile(text="", title="X", folder_path="", tags=[], image_data=png)
     cache = NoteCache()
-    result = cache.put_full("nigdy_nie_zapisany.imgnote", mtime=1.0, note=note)
+    result = cache.put_full("nigdy_nie_zapisany.imgnote", mtime=1.0, note=note,
+                            keep_image=False, with_thumbnail=True)
     assert result.thumbnail_data is not None
     assert len(result.thumbnail_data) < len(png)
-    print("OK  test_put_full_also_generates_thumbnail")
+    assert len(cache._images) == 0
+    assert cache.get_thumbnail("nigdy_nie_zapisany.imgnote", None, 1.0) == result.thumbnail_data
+    print("OK  test_put_full_with_thumbnail_keeps_no_image")
+
+
+def test_image_budget_evicts_images_keeps_text():
+    """P2: budżet bajtów na pełne obrazy — stary obraz wypada, tekst zostaje
+    (get_content nie deszyfruje), a get_full odszyfrowuje obraz ponownie."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        img = os.urandom(600)
+        path_a = _make_note(root, "A", image_data=img)
+        path_b = _make_note(root, "B", image_data=img)
+        cache = NoteCache(image_budget=1000)
+        cache.get_full(str(path_a), PASSWORD, os.path.getmtime(path_a))
+        cache.get_full(str(path_b), PASSWORD, os.path.getmtime(path_b))
+        assert str(path_a) not in cache._images and str(path_b) in cache._images
+        assert cache.get_content(str(path_a), "zle_haslo", os.path.getmtime(path_a)).text == "tresc A"
+        assert cache.get_full(str(path_a), PASSWORD, os.path.getmtime(path_a)).image_data == img
+    print("OK  test_image_budget_evicts_images_keeps_text")
 
 
 def main():
@@ -229,9 +253,10 @@ def main():
     test_invalidate_forces_refetch()
     test_lru_eviction_drops_least_recently_used()
     test_put_full_hydrates_without_any_decryption()
-    test_get_full_generates_thumbnail_for_real_image()
+    test_get_thumbnail_lazy_for_real_image()
     test_thumbnail_none_when_note_has_no_image()
-    test_put_full_also_generates_thumbnail()
+    test_put_full_with_thumbnail_keeps_no_image()
+    test_image_budget_evicts_images_keeps_text()
     print("\nWszystkie testy przeszły.")
 
 

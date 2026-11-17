@@ -131,7 +131,8 @@ class IndexManager:
             mtime = files_on_disk[filename]
             self.index.set_note(filename, note.title, note.folder_path, mtime, note.tags)
             if self.note_cache is not None:
-                self.note_cache.put_full(path, mtime, note)  # darmowa hydratacja
+                # darmowa hydratacja: tekst + miniatura, bez pełnego obrazu (P2)
+                self.note_cache.put_full(path, mtime, note, keep_image=False, with_thumbnail=True)
             if self.on_progress:
                 self.on_progress(i, total)
 

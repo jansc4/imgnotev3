@@ -550,10 +550,10 @@ class Api:
         try:
             self._require_note_path(filepath)
             mtime = os.path.getmtime(filepath)
-            cached = self._note_cache.get_full(filepath, self._password or None, mtime)
+            thumb = self._note_cache.get_thumbnail(filepath, self._password or None, mtime)
         except Exception:
             return ""
-        return base64.b64encode(cached.thumbnail_data).decode() if cached.thumbnail_data else ""
+        return base64.b64encode(thumb).decode() if thumb else ""
 
     def save_note(
         self,
@@ -789,7 +789,7 @@ class Api:
             fm = self._folder_managers[root]
             engine = SearchEngine(
                 mgr.index, root,
-                note_loader=lambda p: self._note_cache.get_full(
+                note_loader=lambda p: self._note_cache.get_content(
                     p, self._password or None, os.path.getmtime(p)
                 ).text,
             )
