@@ -4,7 +4,6 @@
  */
 
 const AppState = {
-  password: "",
   rootFolders: [],
   folderTree: [],
   expandedFolders: new Set(), // ścieżki folderów rozwiniętych w drzewie (domyślnie wszystko zwinięte)

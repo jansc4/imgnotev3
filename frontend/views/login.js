@@ -63,7 +63,6 @@ registerView("login", function (container) {
       btn.disabled = true;
       try {
         await callApi("confirm_new_vault_password", selectedFolder, confirmPw);
-        AppState.password = pwInput.value;
         pwInput.value = "";
         pwConfirmInput.value = "";
         showView("gallery");
@@ -104,7 +103,6 @@ registerView("login", function (container) {
         errorEl.textContent = "Nowy, pusty folder — powtórz hasło, żeby je potwierdzić.";
         return;
       }
-      AppState.password = pw;
       pwInput.value = "";
       showView("gallery");
     } catch (e) {
