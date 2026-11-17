@@ -9,7 +9,7 @@
  * na razie tylko disabled+tekst na przycisku, żeby było widać że coś się
  * dzieje).
  */
-registerView("login", function (container) {
+registerView("login", function (container, presetFolder) {
   container.innerHTML = `
     <div class="login-screen">
       <h1 class="login-title">ImgNote v3</h1>
@@ -23,7 +23,8 @@ registerView("login", function (container) {
     </div>
   `;
 
-  let selectedFolder = null;
+  // S7: po blokadzie sesji folder jest podstawiony — wystarczy wpisać hasło
+  let selectedFolder = presetFolder || null;
   // Ustawione, gdy login() zwróci password_verified: false (świeży, pusty
   // vault) — od tego momentu przycisk "Wejdź" nie woła już login() ponownie,
   // tylko confirm_new_vault_password() z drugim polem.
@@ -35,6 +36,10 @@ registerView("login", function (container) {
   const pwConfirmInput = document.getElementById("login-pw-confirm");
   const btn = document.getElementById("login-btn");
   const errorEl = document.getElementById("login-error");
+  if (selectedFolder) {
+    folderPathEl.textContent = selectedFolder;
+    pwInput.focus();
+  }
 
   pickBtn.addEventListener("click", async () => {
     const folder = await callApi("pick_folder");

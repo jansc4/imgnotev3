@@ -67,4 +67,16 @@ with tempfile.TemporaryDirectory() as tmp:
     mgr = api._index_managers[tmp]
     assert len(mgr.index.notes) == 25, len(mgr.index.notes)
     print("OK  S5 równoległe zapisy/odczyty")
+
+    # S7: lock() porzuca hasło, cache i managery; dostęp do notatek wymaga ponownego login()
+    api.lock()
+    assert api._password == "" and len(api._note_cache) == 0 and not api._index_managers
+    try:
+        api.get_note(fp)
+        raise AssertionError("get_note po lock() powinien rzucić")
+    except ValueError:
+        pass
+    assert api.login(tmp, PW)["password_verified"] is True
+    assert api.get_note(fp)["title"] == "T3"
+    print("OK  S7 lock/login")
 print("OK test_api_stage2")

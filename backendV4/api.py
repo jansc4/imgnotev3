@@ -286,6 +286,18 @@ class Api:
         self._push_known_tags()
         return True
 
+    @_mutating
+    def lock(self) -> bool:
+        """S7: blokada sesji — porzuca hasło, odszyfrowany cache i managery
+        (indeksy w pamięci). Python nie pozwala nadpisać str w miejscu, więc to
+        zwolnienie referencji, nie wymazanie RAM; dalsze wywołania wymagają login()."""
+        self._password = ""
+        self._note_cache = NoteCache()
+        self._index_managers = {}
+        self._folder_managers = {}
+        self._root_folders = []
+        return True
+
     def pick_folder(self) -> str | None:
         """Sam wybór folderu (dialog), bez żadnych efektów ubocznych —
         używane przez ekran logowania PRZED tym, jak hasło jest znane."""

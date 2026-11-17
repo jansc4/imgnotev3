@@ -63,6 +63,7 @@ registerView("gallery", async function (container) {
         <div class="toolbar-spacer"></div>
         <button id="btn-manage-tags" class="btn">🏷️ Zarządzaj tagami</button>
         <button id="btn-settings" class="btn" title="Ustawienia">⚙️</button>
+        <button id="btn-lock" class="btn" title="Zablokuj (wymaga ponownego hasła)">🔒</button>
         <button id="btn-add-note" class="btn btn-primary">+ Nowa notatka</button>
       </div>
       <div id="breadcrumb-bar" class="breadcrumb-bar"></div>
@@ -996,6 +997,8 @@ function wireGalleryEvents() {
   document.getElementById("btn-settings").addEventListener("click", () => {
     openSettingsPopup();
   });
+
+  document.getElementById("btn-lock").addEventListener("click", () => lockSession());
 
   document.getElementById("btn-add-note").addEventListener("click", () => {
     if (AppState.currentFolder === HOME_SENTINEL) {

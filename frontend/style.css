@@ -387,6 +387,7 @@ body {
 .settings-row { margin-bottom: 16px; min-width: 280px; }
 .settings-label { display: block; font-size: 13px; color: var(--text); margin-bottom: 6px; }
 .settings-row input[type="range"] { width: 100%; accent-color: var(--accent); }
+.settings-select { background: #2a2a2a; color: var(--text); border: 1px solid #3a3a3a; border-radius: 4px; padding: 4px 6px; font-size: 13px; }
 .settings-note { color: #888; font-size: 11px; margin: 12px 0 0; line-height: 1.5; }
 
 /* === Menu kontekstowe (krok 8, runda folder rename/move) — z-index === */

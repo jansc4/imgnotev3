@@ -46,6 +46,38 @@ function escapeHtml(s) {
 }
 const escapeAttr = escapeHtml;
 
+// ── S7: blokada sesji ───────────────────────────────────────────────
+let _lastActivity = Date.now();
+let _locking = false;
+
+async function lockSession() {
+  if (_locking || _currentView === "login") return;
+  _locking = true;
+  try {
+    const lastFolder = AppState.rootFolders[0] || null;
+    if (typeof closeContextMenu === "function") closeContextMenu();
+    if (typeof closeAllPopups === "function") closeAllPopups();
+    await callApi("lock");
+    AppState.rootFolders = [];
+    AppState.folderTree = [];
+    AppState.currentFolder = "";
+    AppState.selectedNotes.clear();
+    showView("login", lastFolder);
+  } finally {
+    _locking = false;
+  }
+}
+
+["mousedown", "keydown", "wheel", "touchstart", "mousemove"].forEach((ev) =>
+  document.addEventListener(ev, () => { _lastActivity = Date.now(); }, { passive: true, capture: true })
+);
+
+setInterval(() => {
+  const minutes = loadSettings().autoLockMinutes;
+  if (!minutes || !_currentView || _currentView === "login" || !window.pywebview) return;
+  if (Date.now() - _lastActivity > minutes * 60000) lockSession();
+}, 15000);
+
 function registerView(name, renderFn) {
   Views[name] = renderFn;
 }
