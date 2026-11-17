@@ -9,6 +9,13 @@ const AppState = {
   folderTree: [],
   expandedFolders: new Set(), // ścieżki folderów rozwiniętych w drzewie (domyślnie wszystko zwinięte)
   currentFolder: "",
+  // Zaznaczenie do eksportu wielu notatek naraz (runda "eksport", 2026-09-24) —
+  // płaski Set filepaths, BEZ typu note/folder: kafelek podfolderu w gridzie
+  // resolvuje się do swoich notatek (rekurencyjnie, list_note_filepaths_in_folder)
+  // W MOMENCIE kliknięcia, dalej liczą się tylko id notatek (folder jest
+  // wirtualny — nie ma co przechowywać osobno). Przetrwa nawigację między
+  // folderami, czyszczone tylko explicit (puste tło / Esc / po eksporcie).
+  selectedNotes: new Set(),
   notes: [],       // aktualnie wyświetlana lista notatek {filepath, title}
   homeSort: "folder", // sortowanie widoku Home: "folder" | "newest" | "random"
   knownTags: [],

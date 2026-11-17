@@ -4,6 +4,57 @@
  */
 const HOME_SENTINEL = "__HOME__";
 
+// ── Zaznaczanie wielu notatek/folderów naraz (runda "eksport", 2026-09-24) ──
+//
+// Ctrl+klik / Shift+klik na kafelku (notatka LUB podfolder) w #notes-grid.
+// Kafelek podfolderu resolvuje się do swoich notatek (rekurencyjnie) W MOMENCIE
+// kliknięcia przez list_note_filepaths_in_folder — AppState.selectedNotes trzyma
+// już tylko płaską listę filepaths, bez pojęcia "zaznaczony folder" (patrz
+// core.js). Wizualne "zaznaczenie" kafelka podfolderu to jednorazowy efekt
+// tej właśnie akcji (dodaj/usuń wszystkie jego notatki) — świadomie NIE
+// przeliczane od nowa przy każdym renderze (koszt: jeśli później ręcznie
+// odznaczysz pojedynczą notatkę z tego folderu gdzie indziej, kafelek folderu
+// zostanie wizualnie "zaznaczony" mimo że w środku brakuje jednej notatki —
+// akceptowalne uproszczenie na start, nie warto tego synchronizować).
+//
+// Shift+klik ZAWSZE dokłada zakres do istniejącego zaznaczenia (unia, nie
+// zamiana) — prostszy model niż osobna obsługa Ctrl+Shift.
+let _lastSelectedItemIndex = null; // pozycyjny anchor dla Shift — resetowany przy KAŻDYM renderze siatki
+
+function clearSelection() {
+  if (AppState.selectedNotes.size === 0) return;
+  AppState.selectedNotes.clear();
+  document.querySelectorAll(".thumb-card-selected").forEach((t) => t.classList.remove("thumb-card-selected"));
+  _lastSelectedItemIndex = null;
+}
+
+async function tileToFilepaths(tile) {
+  return tile.classList.contains("folder-tile")
+    ? await callApi("list_note_filepaths_in_folder", tile.dataset.folderPath)
+    : [tile.dataset.filepath];
+}
+
+async function toggleTileSelection(tile) {
+  const filepaths = await tileToFilepaths(tile);
+  const allSelected = filepaths.length > 0 && filepaths.every((fp) => AppState.selectedNotes.has(fp));
+  filepaths.forEach((fp) => {
+    if (allSelected) AppState.selectedNotes.delete(fp);
+    else AppState.selectedNotes.add(fp);
+  });
+  tile.classList.toggle("thumb-card-selected", !allSelected);
+}
+
+async function selectRange(itemEls, fromIdx, toIdx) {
+  const [start, end] = fromIdx <= toIdx ? [fromIdx, toIdx] : [toIdx, fromIdx];
+  for (let i = start; i <= end; i++) {
+    const tile = itemEls[i];
+    const filepaths = await tileToFilepaths(tile);
+    filepaths.forEach((fp) => AppState.selectedNotes.add(fp));
+    tile.classList.add("thumb-card-selected");
+  }
+}
+
+
 registerView("gallery", async function (container) {
   container.innerHTML = `
     <div class="gallery">
@@ -431,6 +482,11 @@ async function refreshCurrentGridView() {
 function openNoteContextMenu(event, filepath, currentFolder) {
   openContextMenu(event, [
     {
+      label: "📤 Eksportuj",
+      onClick: () => openExportPopup([filepath]),
+    },
+    { separator: true },
+    {
       label: "→ Przenieś",
       onClick: () => {
         openFolderPickerPopup({
@@ -498,6 +554,70 @@ function openFolderPickerPopup({ title, excludePath, onPick }) {
           closePopup();
           onPick(el.dataset.path);
         });
+      });
+    },
+  });
+}
+
+// Jeden popup dla pojedynczej notatki (openNoteContextMenu) i dla zaznaczenia
+// wielu naraz (bulk menu przy Ctrl/Shift-selekcji) — filepaths to zawsze
+// płaska lista, export_notes po stronie backendu nie wie skąd pochodzi.
+function openExportPopup(filepaths) {
+  let format = "png_txt";
+  let outputFolder = null;
+
+  openPopup({
+    title: `Eksportuj (${filepaths.length} ${filepaths.length === 1 ? "notatka" : "notatek"})`,
+    render(container) {
+      container.innerHTML = `
+        <div class="settings-row">
+          <label class="settings-label">Format:</label>
+          <select id="export-format" class="editor-input" style="width:100%">
+            <option value="png">Tylko obraz (PNG)</option>
+            <option value="txt">Tylko tekst (TXT)</option>
+            <option value="png_txt" selected>Obraz + tekst (osobne pliki)</option>
+            <option value="pdf">PDF (obraz + tekst w jednym)</option>
+          </select>
+        </div>
+        <div class="settings-row">
+          <button id="export-pick-folder" class="btn">📁 Wybierz folder docelowy…</button>
+          <p id="export-folder-path" class="login-folder-path"></p>
+        </div>
+        <div style="display:flex; justify-content:flex-end; gap:8px;">
+          <button id="export-cancel" class="btn">Anuluj</button>
+          <button id="export-confirm" class="btn btn-primary" disabled>Eksportuj</button>
+        </div>
+      `;
+      const formatEl = container.querySelector("#export-format");
+      const pathEl = container.querySelector("#export-folder-path");
+      const confirmBtn = container.querySelector("#export-confirm");
+
+      formatEl.addEventListener("change", () => {
+        format = formatEl.value;
+      });
+
+      container.querySelector("#export-pick-folder").addEventListener("click", async () => {
+        const folder = await callApi("pick_export_folder");
+        if (folder) {
+          outputFolder = folder;
+          pathEl.textContent = folder;
+          confirmBtn.disabled = false;
+        }
+      });
+
+      container.querySelector("#export-cancel").addEventListener("click", closePopup);
+
+      confirmBtn.addEventListener("click", async () => {
+        closePopup();
+        showProgressModal("Eksportuję…");
+        try {
+          await callApi("export_notes", filepaths, outputFolder, format);
+          clearSelection();
+        } catch (e) {
+          alert("Błąd eksportu:\n" + e);
+        } finally {
+          hideProgressModal();
+        }
       });
     },
   });
@@ -585,22 +705,53 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
   });
   el.innerHTML = html;
 
-  el.querySelectorAll(".folder-tile").forEach((tile) => {
-    tile.addEventListener("click", () => {
-      selectFolder(tile.dataset.folderPath);
+  // Ctrl/Shift+klik działa jednolicie na wszystkich kafelkach siatki
+  // (notatki I podfoldery) — stąd jedna wspólna lista pozycyjna zamiast
+  // osobnego wiring dla .folder-tile i .thumb-card:not(.folder-tile).
+  _lastSelectedItemIndex = null; // nowy render = nowe indeksy, stary anchor nieważny
+  const itemEls = Array.from(el.querySelectorAll(".thumb-card"));
+  itemEls.forEach((tile, idx) => {
+    const isFolder = tile.classList.contains("folder-tile");
+
+    tile.addEventListener("click", async (e) => {
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        await toggleTileSelection(tile);
+        _lastSelectedItemIndex = idx;
+        return;
+      }
+      if (e.shiftKey && _lastSelectedItemIndex !== null) {
+        e.preventDefault();
+        await selectRange(itemEls, _lastSelectedItemIndex, idx);
+        _lastSelectedItemIndex = idx;
+        return;
+      }
+      if (isFolder) {
+        selectFolder(tile.dataset.folderPath);
+      } else {
+        openViewerPopup(tile.dataset.folder || AppState.currentFolder, tile.dataset.filepath);
+      }
+    });
+
+    tile.addEventListener("contextmenu", (e) => {
+      if (AppState.selectedNotes.size > 1) {
+        openContextMenu(e, [
+          {
+            label: `📤 Eksportuj zaznaczone (${AppState.selectedNotes.size})`,
+            onClick: () => openExportPopup(Array.from(AppState.selectedNotes)),
+          },
+        ]);
+        return;
+      }
+      if (!isFolder) {
+        openNoteContextMenu(e, tile.dataset.filepath, tile.dataset.folder || AppState.currentFolder);
+      }
+      // Prawy klik na kafelku podfolderu w gridzie (poza multi-selekcją) —
+      // menu folderowe dziś istnieje tylko w drzewie po lewej
+      // (openFolderContextMenu); świadomie nie dubluję go tu w tej turze.
     });
   });
 
-  el.querySelectorAll(".thumb-card:not(.folder-tile)").forEach((card) => {
-    card.addEventListener("click", () => {
-      const fp = card.dataset.filepath;
-      const folder = card.dataset.folder || AppState.currentFolder;
-      openViewerPopup(folder, fp);
-    });
-    card.addEventListener("contextmenu", (e) => {
-      openNoteContextMenu(e, card.dataset.filepath, card.dataset.folder || AppState.currentFolder);
-    });
-  });
 
   // Lazy-loading miniatur: tylko dla kart widocznych (lub prawie widocznych)
   // w obszarze siatki, przez IntersectionObserver — zamiast ładować
@@ -793,6 +944,18 @@ function hideSearchTagAutocomplete() {
 // ── Toolbar: foldery, tagi, nowa notatka ─────────────────────────────
 
 function wireGalleryEvents() {
+  // Czyszczenie zaznaczenia: klik na puste tło #notes-grid / Esc. Wpięte tu
+  // (raz na zamontowanie widoku), NIE w renderNotesGrid — #notes-grid jako
+  // węzeł DOM przetrwa wiele renderów siatki w obrębie jednego mounta
+  // (tylko innerHTML się zmienia), więc wiring wewnątrz renderNotesGrid
+  // duplikowałby się przy każdej nawigacji folder/search.
+  document.getElementById("notes-grid").addEventListener("click", (e) => {
+    if (e.target.id === "notes-grid") clearSelection();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") clearSelection();
+  });
+
   document.getElementById("home-node").addEventListener("click", async () => {
     // Podczas wyszukiwania Home NIE wychodzi z trybu (to robi tylko ✕)
     // — tylko czyści zawężenie do folderu, pokazując wszystkie wyniki.

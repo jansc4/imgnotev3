@@ -35,7 +35,7 @@ from .doc_extractor import extract as extract_doc_text
 from .image_note_file import ImageNoteFile
 from .index_manager import IndexManager
 from .folder_manager import FolderManager
-from .note_cache import NoteCache
+from .note_cache import CachedNote, NoteCache
 from .search_engine import SearchEngine
 
 
@@ -293,6 +293,19 @@ class Api:
             raise ValueError(f"Nieznany folder: {folder}")
         return len(self._notes_under_folder(fm, folder))
 
+    def list_note_filepaths_in_folder(self, folder: str) -> list[str]:
+        """Rekurencyjnie (siebie + podfoldery) — pełne filepaths, nie same
+        nazwy plików jak _notes_under_folder. Używane przez front do
+        resolvowania Ctrl/Shift+klik na kafelku podfolderu w gridzie do
+        zbioru zaznaczonych notatek (runda "eksport", 2026-09-24) — folder
+        jest wirtualny, więc zaznaczenie liczy się zawsze jako płaska lista
+        id notatek, nigdy jako sam folder."""
+        fm = self._folder_manager_for(folder)
+        if not fm:
+            raise ValueError(f"Nieznany folder: {folder}")
+        mgr = fm.index_manager
+        return [os.path.join(mgr.root_folder, fn) for fn in self._notes_under_folder(fm, folder)]
+
     def _validate_folder_op(self, folder: str) -> FolderManager:
         """Wspólny guard dla rename_folder/move_folder — root folderów nie
         da się przemianować/przenieść (to nie wirtualna ścieżka w indeksie,
@@ -546,6 +559,167 @@ class Api:
             mgr.note_deleted(filepath)
             mgr.save()
         self._push_known_tags()
+
+    # ── Eksport (runda "eksport", 2026-09-24) ───────────────────────────
+    # Jeden mechanizm dla pojedynczej notatki, wielu zaznaczonych i (w
+    # przyszłości) całej biblioteki — front zawsze przekazuje płaską listę
+    # filepaths (patrz AppState.selectedNotes / list_note_filepaths_in_folder),
+    # export_notes nie wie i nie musi wiedzieć skąd ta lista pochodzi.
+    # Odtwarzanie struktury folderów w output_root jest "za darmo" —
+    # os.makedirs per notatka tworzy tylko katalogi faktycznie potrzebne,
+    # bez osobnej logiki przycinania drzewa do "użytych gałęzi".
+    #
+    # odt świadomie POMINIĘTY w tej rundzie (Jan, 2026-09-24: "zostawmy go")
+    # — prostszy niż pdf (format płynący, bez paginacji), do dopisania
+    # osobno później.
+
+    _IMAGE_EXT = (
+        (b"\xff\xd8\xff", ".jpg"),
+        (b"\x89PNG\r\n\x1a\n", ".png"),
+        (b"GIF87a", ".gif"),
+        (b"GIF89a", ".gif"),
+        (b"RIFF", ".webp"),
+        (b"BM", ".bmp"),
+    )
+
+    @staticmethod
+    def _image_ext(data: bytes) -> str:
+        for sig, ext in Api._IMAGE_EXT:
+            if data.startswith(sig):
+                return ext
+        return ".png"  # nie powinno się zdarzyć — patrz fetch_url_image._IMAGE_MAGIC
+
+    @staticmethod
+    def _sanitize_filename(name: str) -> str:
+        import re
+        name = re.sub(r'[\\/:*?"<>|]', "_", (name or "").strip())
+        return name or "notatka"
+
+    def export_notes(self, filepaths: list[str], output_root: str, fmt: str) -> dict:
+        """fmt: "png" | "txt" | "png_txt" | "pdf". Kolizje nazw (ten sam
+        tytuł, ten sam katalog wyjściowy) rozwiązywane numerycznym sufiksem."""
+        used_names: dict[str, set[str]] = {}
+        total = len(filepaths)
+        for i, filepath in enumerate(filepaths, start=1):
+            mtime = os.path.getmtime(filepath)
+            note = self.note_cache.get_full(filepath, self.password or None, mtime)
+
+            out_dir = os.path.join(output_root, note.folder_path) if note.folder_path else output_root
+            os.makedirs(out_dir, exist_ok=True)
+
+            base = self._sanitize_filename(note.title)
+            used = used_names.setdefault(out_dir, set())
+            final_base, suffix = base, 1
+            while final_base in used:
+                suffix += 1
+                final_base = f"{base}_{suffix}"
+            used.add(final_base)
+
+            self._write_note_export(out_dir, final_base, note, fmt)
+            self._push_progress(i, total)
+
+        return {"exported": total}
+
+    def _write_note_export(self, out_dir: str, base: str, note: CachedNote, fmt: str) -> None:
+        if fmt == "png":
+            self._export_write_image(out_dir, base, note)
+        elif fmt == "txt":
+            self._export_write_text(out_dir, base, note)
+        elif fmt == "png_txt":
+            self._export_write_image(out_dir, base, note)
+            self._export_write_text(out_dir, base, note)
+        elif fmt == "pdf":
+            self._export_write_pdf(out_dir, base, note)
+        else:
+            raise ValueError(f"Nieznany format eksportu: {fmt}")
+
+    def _export_write_image(self, out_dir: str, base: str, note: CachedNote) -> None:
+        if not note.image_data:
+            return  # notatka bez obrazu — nic do zapisania w tym formacie
+        ext = self._image_ext(note.image_data)
+        with open(os.path.join(out_dir, f"{base}{ext}"), "wb") as f:
+            f.write(note.image_data)
+
+    def _export_write_text(self, out_dir: str, base: str, note: CachedNote) -> None:
+        with open(os.path.join(out_dir, f"{base}.txt"), "w", encoding="utf-8") as f:
+            f.write(note.text or "")
+
+    # -- PDF: obraz (jeśli jest) na pierwszej stronie A4, dalej tekst.
+    # PyMuPDF nie ma wbudowanej paginacji tekstu (insert_textbox mówi tylko
+    # "zmieściło się / nie", nie zwraca niezmieszczonej reszty) —
+    # _pdf_split_to_fit robi to bisekcją na scratch-page (log n prób),
+    # cięcie na granicy spacji/nowej linii, żeby nie łamać słów w środku.
+    _PDF_PAGE_W, _PDF_PAGE_H, _PDF_MARGIN, _PDF_FONTSIZE = 595, 842, 40, 11
+
+    def _export_write_pdf(self, out_dir: str, base: str, note: CachedNote) -> None:
+        import fitz
+        doc = fitz.open()
+        rect = fitz.Rect(
+            self._PDF_MARGIN, self._PDF_MARGIN,
+            self._PDF_PAGE_W - self._PDF_MARGIN, self._PDF_PAGE_H - self._PDF_MARGIN,
+        )
+        if note.image_data:
+            self._pdf_insert_image_page(doc, note.image_data, rect)
+        if note.text:
+            self._pdf_insert_text_pages(doc, note.text, rect)
+        if len(doc) == 0:
+            doc.new_page(width=self._PDF_PAGE_W, height=self._PDF_PAGE_H)  # bez obrazu i tekstu — pusta strona zamiast PDF-a bez stron
+        doc.save(os.path.join(out_dir, f"{base}.pdf"))
+        doc.close()
+
+    def _pdf_insert_image_page(self, doc, image_data: bytes, rect) -> None:
+        import fitz
+        pix = fitz.Pixmap(image_data)
+        scale = min(rect.width / pix.width, rect.height / pix.height, 1.0)
+        w, h = pix.width * scale, pix.height * scale
+        x0 = rect.x0 + (rect.width - w) / 2
+        page = doc.new_page(width=self._PDF_PAGE_W, height=self._PDF_PAGE_H)
+        page.insert_image(fitz.Rect(x0, rect.y0, x0 + w, rect.y0 + h), stream=image_data)
+
+    def _pdf_insert_text_pages(self, doc, text: str, rect) -> None:
+        remaining = text
+        while remaining:
+            chunk, remaining = self._pdf_split_to_fit(rect, remaining)
+            if not chunk:  # zabezpieczenie przed nieskończoną pętlą (nie powinno się zdarzyć)
+                chunk, remaining = remaining, ""
+            page = doc.new_page(width=self._PDF_PAGE_W, height=self._PDF_PAGE_H)
+            page.insert_textbox(rect, chunk, fontsize=self._PDF_FONTSIZE, fontname="helv")
+
+    def _pdf_fits(self, rect, text: str) -> bool:
+        import fitz
+        scratch = fitz.open()
+        page = scratch.new_page(width=rect.width, height=rect.height)
+        overflow = page.insert_textbox(
+            fitz.Rect(0, 0, rect.width, rect.height), text,
+            fontsize=self._PDF_FONTSIZE, fontname="helv",
+        )
+        scratch.close()
+        return overflow >= 0
+
+    def _pdf_split_to_fit(self, rect, text: str) -> tuple[str, str]:
+        """Maks. prefiks `text`, który zmieści się w `rect` (bisekcja), cięty
+        na granicy spacji/nowej linii, jeśli to możliwe."""
+        if self._pdf_fits(rect, text):
+            return text, ""
+        lo, hi = 0, len(text)
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if self._pdf_fits(rect, text[:mid]):
+                lo = mid
+            else:
+                hi = mid - 1
+        cut = lo
+        if cut < len(text) and not text[cut].isspace():
+            boundary = max(text.rfind(" ", 0, cut), text.rfind("\n", 0, cut))
+            if boundary > 0:
+                cut = boundary + 1
+        return text[:cut], text[cut:]
+
+    def pick_export_folder(self) -> str | None:
+        """Dialog wyboru folderu docelowego eksportu — osobna nazwa niż
+        pick_folder(), żeby front nie mylił z wyborem roota vaulta."""
+        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        return result[0] if result else None
 
     # ── Wyszukiwanie ─────────────────────────────────────────────
 

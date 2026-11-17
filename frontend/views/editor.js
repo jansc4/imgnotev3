@@ -81,7 +81,7 @@ function openEditorPopup(folder, filepath) {
                 </div>
               </div>
               <div id="text-drop" class="drop-zone drop-zone-text">
-                <span class="drop-hint">Przeciągnij plik tekstowy (.txt/.md/.pdf/.docx/…) lub link — zastąpi treść</span>
+                <span class="drop-hint">Przeciągnij plik tekstowy (.txt/.md/.pdf/.docx/…) lub link, albo kliknij, by wybrać plik — zastąpi treść</span>
               </div>
             </div>
             <div class="editor-right">
@@ -520,6 +520,12 @@ function wireTextDropZone() {
       }
       await importTextResult(() => callApi("extract_doc", fullPath), textEl, statusEl);
     }
+  });
+
+  zone.addEventListener("click", async () => {
+    const path = await callApi("open_file_dialog");
+    if (!path) return;
+    await importTextResult(() => callApi("extract_doc", path), textEl, statusEl);
   });
 }
 
