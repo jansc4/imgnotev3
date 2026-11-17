@@ -37,4 +37,34 @@ with tempfile.TemporaryDirectory() as tmp:
     assert api.get_note_thumbnail(victim) == ""
     assert os.path.exists(victim), "plik ofiary usunięty"
     assert [n for n in dir(api) if not n.startswith("_") and not callable(getattr(api, n))] == []
+
+# S8: schematy, limit pobierania, ".." w folder_path
+import http.server  # noqa: E402
+import threading  # noqa: E402
+from backendV4.image_note_file import ImageNoteFile  # noqa: E402
+
+
+class _Big(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # bez Content-Length: limit musi zadziałać na strumieniu
+        self.send_response(200)
+        self.end_headers()
+        chunk = b"x" * 65536
+        try:
+            for _ in range(200):  # ~12.5 MB > limit tekstu 5 MB
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Big)
+threading.Thread(target=srv.serve_forever, daemon=True).start()
+api = Api()
+expect_error(api.fetch_url_text, "file:///etc/passwd")
+expect_error(api.fetch_url_image, "ftp://example.com/a.png")
+expect_error(api.fetch_url_text, f"http://127.0.0.1:{srv.server_port}/big")
+srv.shutdown()
+assert ImageNoteFile("", b"", [], "t", "../../etc/./x/..").folder_path == "etc/x"
 print("OK test_api_paths")

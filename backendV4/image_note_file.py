@@ -99,7 +99,8 @@ class ImageNoteFile:
         if not folder_path:
             return ""
         normalized = folder_path.replace("\\", "/").strip("/")
-        parts = [p for p in normalized.split("/") if p]
+        # S8: bez segmentów "." i ".." — przy eksporcie folder_path staje się prawdziwą ścieżką
+        parts = [p for p in normalized.split("/") if p and p not in (".", "..")]
         return "/".join(parts)
 
     # ---- derywacja klucza ------------------------------------------

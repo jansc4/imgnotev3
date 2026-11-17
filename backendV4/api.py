@@ -721,7 +721,9 @@ class Api:
             mtime = os.path.getmtime(filepath)
             note = self._note_cache.get_full(filepath, self._password or None, mtime)
 
-            out_dir = os.path.join(output_root, note.folder_path) if note.folder_path else output_root
+            # S8: każdy segment przez _sanitize_filename (folder_path jest już bez "."/"..")
+            segments = [self._sanitize_filename(s) for s in note.folder_path.split("/") if s]
+            out_dir = os.path.join(output_root, *segments) if segments else output_root
             os.makedirs(out_dir, exist_ok=True)
 
             base = self._sanitize_filename(note.title)
@@ -945,16 +947,14 @@ class Api:
             browser_headers["Referer"] = referer
 
         try:
-            resp = requests.get(url, timeout=15, headers=browser_headers)
-            resp.raise_for_status()
+            resp = self._http_get(url, browser_headers, self._MAX_FETCH_IMAGE)
         except requests.HTTPError as e:
             if e.response is None or e.response.status_code != 403:
                 raise
             from urllib.parse import urlparse
             parsed = urlparse(url)
             retry_headers = {**browser_headers, "Referer": f"{parsed.scheme}://{parsed.netloc}/"}
-            resp = requests.get(url, timeout=15, headers=retry_headers)
-            resp.raise_for_status()
+            resp = self._http_get(url, retry_headers, self._MAX_FETCH_IMAGE)
 
         content = resp.content
         if not any(content.startswith(sig) for sig in self._IMAGE_MAGIC):
@@ -972,9 +972,35 @@ class Api:
 
     def fetch_url_text(self, url: str) -> dict:
         """Import tekstu z URL (drag&drop linku, jak TextDropArea w v2)."""
-        resp = requests.get(url, timeout=15, headers={"User-Agent": "ImgNoteV3/1.0"})
-        resp.raise_for_status()
+        resp = self._http_get(url, {"User-Agent": "ImgNoteV3/1.0"}, self._MAX_FETCH_TEXT)
         return {"text": resp.text}
+
+    _MAX_FETCH_IMAGE = 50 * 1024 * 1024
+    _MAX_FETCH_TEXT = 5 * 1024 * 1024
+
+    @staticmethod
+    def _http_get(url: str, headers: dict, limit: int):
+        """S8: tylko http/https, odczyt strumieniowy z twardym limitem bajtów
+        (resp.content bez limitu = cały plik w RAM, nawet wielogigabajtowy)."""
+        from urllib.parse import urlparse
+        if urlparse(url or "").scheme not in ("http", "https"):
+            raise ValueError("Obsługiwane są tylko adresy http/https.")
+        resp = requests.get(url, timeout=15, headers=headers, stream=True)
+        try:
+            resp.raise_for_status()
+            declared = resp.headers.get("Content-Length")
+            if declared and declared.isdigit() and int(declared) > limit:
+                raise ValueError(f"Plik za duży (limit {limit // (1024 * 1024)} MB).")
+            buf = bytearray()
+            for chunk in resp.iter_content(64 * 1024):
+                buf += chunk
+                if len(buf) > limit:
+                    raise ValueError(f"Plik za duży (limit {limit // (1024 * 1024)} MB).")
+        finally:
+            resp.close()
+        # resp.content/.text działają dalej na już odczytanych bajtach (z kodowaniem jak dawniej)
+        resp._content = bytes(buf)
+        return resp
 
     def read_clipboard_text(self) -> str:
         """
