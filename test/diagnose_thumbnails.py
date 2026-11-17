@@ -52,6 +52,53 @@ def detect(data: bytes) -> str:
     return f"nieznany (pierwsze bajty: {data[:12].hex()})"
 
 
+def png_chunks(data: bytes) -> str:
+    """Lista bloków PNG: nazwa, długość, poprawność CRC (bez treści bloków)."""
+    import struct
+    import zlib
+    out, pos = [], 8
+    while pos + 8 <= len(data) and len(out) < 40:
+        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        crc_raw = data[pos + 8 + length:pos + 12 + length]
+        ok = len(crc_raw) == 4 and struct.unpack(">I", crc_raw)[0] == zlib.crc32(ctype + body) & 0xFFFFFFFF
+        name = ctype.decode("latin-1", "replace")
+        out.append(f"{name}({length}{'' if ok else ', ZŁE CRC'})")
+        if ctype == b"IEND" or len(crc_raw) < 4:
+            break
+        pos += 12 + length
+    return " ".join(out)
+
+
+def raw_png_error(data: bytes) -> str:
+    """Prawdziwy wyjątek wtyczki PNG (Image.open zamienia go na 'cannot identify')."""
+    from PIL import PngImagePlugin
+    try:
+        PngImagePlugin.PngImageFile(io.BytesIO(data)).load()
+        return "wtyczka PNG wprost: OK"
+    except Exception as e:  # noqa: BLE001
+        return f"wtyczka PNG wprost: {type(e).__name__}: {e}"
+
+
+def try_fixes(data: bytes) -> list[str]:
+    """Które ustawienie Pillow pozwala wygenerować miniaturę."""
+    from PIL import ImageFile, PngImagePlugin
+    results = []
+    for label, apply, undo in (
+        ("LOAD_TRUNCATED_IMAGES", lambda: setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", True),
+         lambda: setattr(ImageFile, "LOAD_TRUNCATED_IMAGES", False)),
+        ("MAX_TEXT_CHUNK x100", lambda: setattr(PngImagePlugin, "MAX_TEXT_CHUNK", PngImagePlugin.MAX_TEXT_CHUNK * 100),
+         lambda: setattr(PngImagePlugin, "MAX_TEXT_CHUNK", PngImagePlugin.MAX_TEXT_CHUNK // 100)),
+    ):
+        apply()
+        try:
+            ok = thumbnail._generate(data) is not None  # bez fallbacku, żeby wynik coś mówił
+        finally:
+            undo()
+        results.append(f"{label}: {'POMAGA' if ok else 'nie pomaga'}")
+    return results
+
+
 def why(data: bytes) -> str:
     """Powtórzenie kroków generate_thumbnail z widocznym błędem."""
     try:
@@ -93,6 +140,12 @@ def main() -> int:
         note = ImageNoteFile.load_from_file(path, mgr.key)
         print(f"{filename}  {len(note.image_data) / 1024:8.0f} KB  {detect(note.image_data)}")
         print(f"    {why(note.image_data)}")
+        if note.image_data.startswith(b"\x89PNG"):
+            print(f"    bloki: {png_chunks(note.image_data)}")
+            print(f"    {raw_png_error(note.image_data)}")
+            print(f"    {'; '.join(try_fixes(note.image_data))}")
+        ok = thumbnail.generate_thumbnail(note.image_data) is not None
+        print(f"    generate_thumbnail (z odchudzaniem PNG): {'OK — --fix doda miniaturę' if ok else 'nadal brak'}")
         if args.fix:
             thumb = thumbnail.generate_thumbnail(note.image_data)
             if thumb is not None:

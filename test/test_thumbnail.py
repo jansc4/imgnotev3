@@ -78,6 +78,33 @@ def test_decompression_bomb_returns_none():
     print("OK  test_decompression_bomb_returns_none")
 
 
+def _png_with_chunk(ctype: bytes, body: bytes, bad_crc: bool = False) -> bytes:
+    """PNG z wstawionym blokiem dodatkowym po IHDR (opcjonalnie ze złym CRC)."""
+    import struct
+    import zlib
+    png = _solid(300, 200, fmt="PNG")
+    crc = (zlib.crc32(ctype + body) & 0xFFFFFFFF) ^ (1 if bad_crc else 0)
+    chunk = struct.pack(">I", len(body)) + ctype + body + struct.pack(">I", crc)
+    return png[:33] + chunk + png[33:]
+
+
+def test_png_with_broken_ancillary_chunks():
+    """Pliki, które przeglądarka wyświetla, a Pillow odrzuca w całości:
+    zły CRC bloku tEXt i zTXt przekraczający MAX_TEXT_CHUNK — miniatura i tak powstaje."""
+    import zlib
+    bad_crc = _png_with_chunk(b"tEXt", b"Software\x00x", bad_crc=True)
+    big_text = _png_with_chunk(b"zTXt", b"Comment\x00\x00" + zlib.compress(b"A" * 3_000_000))
+    for data in (bad_crc, big_text):
+        try:
+            Image.open(io.BytesIO(data)).load()
+            raise AssertionError("dane testowe powinny być nieczytelne dla Pillow wprost")
+        except (OSError, ValueError, SyntaxError):
+            pass
+        thumb = Image.open(io.BytesIO(generate_thumbnail(data)))
+        assert thumb.format == "WEBP" and thumb.size == (300, 200)
+    print("OK  test_png_with_broken_ancillary_chunks")
+
+
 def test_does_not_upscale_small_image():
     data = _solid(50, 40, fmt="PNG")
     thumb = generate_thumbnail(data)
@@ -118,6 +145,7 @@ def main():
     test_shrinks_large_jpeg_to_webp()
     test_exif_orientation_applied()
     test_decompression_bomb_returns_none()
+    test_png_with_broken_ancillary_chunks()
     test_does_not_upscale_small_image()
     test_preserves_aspect_ratio()
     test_preserves_transparency_in_png()

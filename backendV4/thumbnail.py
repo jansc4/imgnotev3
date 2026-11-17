@@ -12,6 +12,8 @@ Rozmiar: dłuższy bok skalowany do MAX_DIMENSION px, proporcje zachowane,
 Image.thumbnail() nigdy nie powiększa (małe obrazki zostają bez zmian).
 """
 import io
+import struct
+import zlib
 
 from PIL import Image, ImageOps
 
@@ -22,13 +24,45 @@ MAX_PIXELS = 100_000_000
 Image.MAX_IMAGE_PIXELS = MAX_PIXELS
 
 
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+# bloki dodatkowe potrzebne do poprawnego obrazu (przezroczystość) — reszta odrzucana
+_PNG_KEEP_ANCILLARY = {b"tRNS"}
+
+
+def _png_critical_only(data: bytes) -> bytes | None:
+    """Kopia PNG z samymi blokami krytycznymi (+ tRNS) i przeliczonym CRC.
+    Przeglądarki pomijają zepsute bloki dodatkowe (zły CRC tEXt/iCCP, ogromny
+    zTXt), a Pillow odrzuca cały plik — tylko na potrzeby miniatury, oryginał bez zmian."""
+    out, pos = [PNG_SIGNATURE], 8
+    while pos + 8 <= len(data):
+        length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
+        body = data[pos + 8:pos + 8 + length]
+        if len(body) != length:
+            break
+        if ctype[:1].isupper() or ctype in _PNG_KEEP_ANCILLARY:
+            out.append(struct.pack(">I", length) + ctype + body
+                       + struct.pack(">I", zlib.crc32(ctype + body) & 0xFFFFFFFF))
+        if ctype == b"IEND":
+            break
+        pos += 12 + length
+    return b"".join(out) if len(out) > 1 else None
+
+
 def generate_thumbnail(image_data: bytes) -> bytes | None:
     """Zwraca miniaturę WebP, albo None jeśli image_data jest puste albo nie da
     się go rozpoznać jako obrazu. Nigdy nie rzuca — brak miniatury nie może
     wywalić zapisu notatki ani migracji."""
     if not image_data:
         return None
+    thumb = _generate(image_data)
+    if thumb is None and image_data.startswith(PNG_SIGNATURE):
+        cleaned = _png_critical_only(image_data)
+        if cleaned:
+            thumb = _generate(cleaned)
+    return thumb
 
+
+def _generate(image_data: bytes) -> bytes | None:
     try:
         img = Image.open(io.BytesIO(image_data))  # czyta tylko nagłówek
         # sprawdzenie przed dekodowaniem; bez warnings.catch_warnings (nie jest thread-safe)
