@@ -160,11 +160,11 @@ def test_progress_pushed_during_setup_root():
         api._setup_root(str(root))
 
         progress_calls = [c for c in api._window.calls if "onLongOperationProgress" in c]
-        assert progress_calls == [
-            "window.onLongOperationProgress && window.onLongOperationProgress(1, 3)",
-            "window.onLongOperationProgress && window.onLongOperationProgress(2, 3)",
-            "window.onLongOperationProgress && window.onLongOperationProgress(3, 3)",
-        ], f"nieoczekiwane wywołania progresu: {progress_calls}"
+        # P5: kroki pośrednie dławione do ~50 ms, ostatni krok zawsze wysłany
+        assert progress_calls, "brak wywołań progresu"
+        assert progress_calls[-1] == "window.onLongOperationProgress && window.onLongOperationProgress(3, 3)", \
+            f"nieoczekiwane wywołania progresu: {progress_calls}"
+        assert len(progress_calls) <= 3
     print("OK  test_progress_pushed_during_setup_root")
 
 

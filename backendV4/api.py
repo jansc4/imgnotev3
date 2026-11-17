@@ -22,10 +22,14 @@ tagów z JSON usunięty (2026-08-28, KISS) — nie miał miejsca w architekturze
 opartej wyłącznie na faktycznym użyciu tagów.
 """
 import base64
+import functools
+import inspect
 import json
 import os
 import random
 import re
+import threading
+import time
 
 import requests
 import webview
@@ -38,6 +42,18 @@ from .index_manager import IndexManager
 from .folder_manager import FolderManager
 from .note_cache import CachedNote, NoteCache
 from .search_engine import SearchEngine
+
+
+def _mutating(fn):
+    """S5: pywebview woła js_api z wielu wątków — operacje zmieniające indeks
+    idą pod jedną blokadą Api (RLock, więc zagnieżdżenia są bezpieczne)."""
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        with self._mutate_lock:
+            return fn(self, *args, **kwargs)
+    # pywebview czyta nazwy argumentów przez getfullargspec, a ten honoruje __signature__
+    wrapper.__signature__ = inspect.signature(fn)
+    return wrapper
 
 
 class _ClipboardBridge(QObject):
@@ -118,6 +134,8 @@ class Api:
         # S2: ostatnie wyniki własnych dialogów — eksport tylko tam, gdzie wskazał użytkownik
         self._last_export_folder: str | None = None
         self._last_tags_save_path: str | None = None
+        self._mutate_lock = threading.RLock()
+        self._last_progress_t = 0.0
 
     def set_window(self, window):
         self._window = window
@@ -129,6 +147,11 @@ class Api:
         front sam wie kiedy zaczyna i kończy, bo obejmuje wywołanie własnym
         `await` (patrz progress_modal.js). Sygnatura dokładnie pasuje do
         IndexManager(on_progress=...), więc wpina się bez żadnego lambda."""
+        # P5: najwyżej co ~50 ms, ostatni krok zawsze (evaluate_js na każdy plik dławi most)
+        now = time.monotonic()
+        if current < total and now - self._last_progress_t < 0.05:
+            return
+        self._last_progress_t = now
         if self._window:
             self._window.evaluate_js(
                 f"window.onLongOperationProgress && window.onLongOperationProgress({current}, {total})"
@@ -206,6 +229,7 @@ class Api:
 
     # ── Sesja / logowanie ────────────────────────────────────────
 
+    @_mutating
     def login(self, root_folder: str, password: str) -> dict:
         """
         Folder + hasło razem, jeden krok. Buduje IndexManager i robi
@@ -244,6 +268,7 @@ class Api:
 
         return {"password_verified": mgr.password_verified}
 
+    @_mutating
     def confirm_new_vault_password(self, root_folder: str, password_confirm: str) -> bool:
         """Domyka login() dla ŚWIEŻEGO (pustego) vaulta — front woła to
         dopiero po drugim wpisaniu hasła i sprawdzeniu, że się zgadza z
@@ -272,6 +297,7 @@ class Api:
     def list_root_folders(self) -> list[str]:
         return list(self._root_folders)
 
+    @_mutating
     def add_root_folder(self) -> str | None:
         """Dodatkowy root (multi-root) — dziś używane rzadko (jeden root
         w praktyce), zostaje na przyszłość."""
@@ -285,6 +311,7 @@ class Api:
             self._push_known_tags()
         return folder
 
+    @_mutating
     def remove_root_folder(self, folder: str) -> None:
         """Odepnij folder z listy — NIE usuwa niczego z dysku."""
         if folder in self._root_folders:
@@ -295,6 +322,7 @@ class Api:
     def get_folder_tree(self) -> list[dict]:
         return [fm.get_tree_root_node() for fm in self._folder_managers.values()]
 
+    @_mutating
     def create_subfolder(self, parent: str, name: str) -> str:
         fm = self._folder_manager_for(parent)
         if not fm:
@@ -385,6 +413,7 @@ class Api:
         fm.rename_pending(old_folder_path, new_folder_path)
         return total
 
+    @_mutating
     def rename_folder(self, folder: str, new_name: str) -> str:
         """Zmienia OSTATNI segment ścieżki (zostaje w tym samym rodzicu).
         Zwraca nowy display_path — front musi go użyć do dalszej nawigacji
@@ -400,6 +429,7 @@ class Api:
         self._rewrite_notes_folder_path(fm, folder, new_display_path)
         return new_display_path
 
+    @_mutating
     def move_folder(self, folder: str, new_parent: str) -> str:
         """Przenosi folder (razem z zawartością i podfolderami) pod nowego
         rodzica, zachowując jego nazwę. Jeden root w praktyce (decyzja z
@@ -414,6 +444,7 @@ class Api:
         self._rewrite_notes_folder_path(fm, folder, new_display_path)
         return new_display_path
 
+    @_mutating
     def move_note(self, filepath: str, new_folder: str) -> None:
         """Przenosi POJEDYNCZĄ notatkę do innego folderu — nazwa pliku na
         dysku (losowa) się nie zmienia, tylko folder_path w zaszyfrowanym
@@ -440,6 +471,7 @@ class Api:
         fm.note_saved(new_folder_path)
         mgr.save()
 
+    @_mutating
     def delete_folder(self, folder: str) -> dict:
         """Usuwa WSZYSTKIE notatki pod tą wirtualną ścieżką (siebie i
         wszystkich podfolderów) — nie ma czegoś do "opróżnienia" osobno,
@@ -535,11 +567,31 @@ class Api:
             "title": note.title,
             "folder": folder,
             "text": note.text,
+            "html": self.render_markdown(note.text),  # P6: bez drugiego przejścia przez most
             "tags": note.tags,
             "image_base64": (
                 base64.b64encode(note.image_data).decode() if note.image_data else ""
             ),
         }
+
+    @_mutating
+    def update_note_text(self, filepath: str, text: str) -> dict:
+        """P4: edycja samego tekstu (Viewer) — obraz bierzemy z cache po
+        stronie Pythona, zamiast przesyłać go JS->Py i z powrotem."""
+        self._require_note_path(filepath)
+        mgr = self._index_manager_for_filepath(filepath)
+        if not mgr:
+            raise ValueError(f"Nieznany plik: {filepath}")
+        mtime = os.path.getmtime(filepath)
+        cached = self._note_cache.get_full(filepath, self._password or None, mtime)
+        note = ImageNoteFile(
+            text=text, image_data=cached.image_data, tags=list(cached.tags),
+            title=cached.title, folder_path=cached.folder_path,
+        )
+        note.save_to_file(filepath, password=self._password or None)
+        mgr.note_saved(filepath, note)
+        mgr.save()
+        return {"html": self.render_markdown(text)}
 
     def get_note_thumbnail(self, filepath: str) -> str:
         """Realna, zmniejszona miniatura (backendV4.thumbnail) do
@@ -555,13 +607,14 @@ class Api:
             return ""
         return base64.b64encode(thumb).decode() if thumb else ""
 
+    @_mutating
     def save_note(
         self,
         folder: str,
         title: str,
         text: str,
         tags: list[str],
-        image_base64: str = "",
+        image_base64: str | None = "",
         original_filepath: str | None = None,
     ) -> str:
         """
@@ -574,22 +627,29 @@ class Api:
         plik zamiast zapisywać pod nową nazwą i usuwać starą — zbędne dla
         formatu, gdzie nazwa pliku jest losowa i nic nie koduje. Nowa nazwa
         (losowa) powstaje tylko dla faktycznie nowej notatki.
+
+        P4: image_base64=None (null z JS) = "obraz bez zmian" — bierzemy go
+        z istniejącej notatki zamiast przesyłać przez most; "" = brak obrazu.
         """
         fm = self._folder_manager_for(folder)
         if not fm:
             raise ValueError(f"Nieznany folder: {folder}")
         mgr = fm.index_manager
         folder_path = fm.to_folder_path(folder)
+        if original_filepath:
+            self._require_note_path(original_filepath)
 
-        image_data = base64.b64decode(image_base64) if image_base64 else b""
+        if image_base64 is None and original_filepath and os.path.exists(original_filepath):
+            mtime = os.path.getmtime(original_filepath)
+            image_data = self._note_cache.get_full(original_filepath, self._password or None, mtime).image_data
+        else:
+            image_data = base64.b64decode(image_base64) if image_base64 else b""
         safe_title = (title or "").strip() or "notatka"
         note = ImageNoteFile(
             text=text, image_data=image_data, tags=list(tags),
             title=safe_title, folder_path=folder_path,
         )
 
-        if original_filepath:
-            self._require_note_path(original_filepath)
         if original_filepath and os.path.exists(original_filepath):
             target = original_filepath
         else:
@@ -603,6 +663,7 @@ class Api:
 
         return target
 
+    @_mutating
     def delete_note(self, filepath: str) -> None:
         self._require_note_path(filepath)
         mgr = self._index_manager_for_filepath(filepath)
@@ -975,6 +1036,7 @@ class Api:
     def count_tag_usage(self, tag: str) -> int:
         return sum(len(mgr.index.tag_index.get(tag, [])) for mgr in self._index_managers.values())
 
+    @_mutating
     def rename_tag(self, old: str, new: str) -> dict:
         new = new.strip()
         if not new or new == old:
@@ -1000,6 +1062,7 @@ class Api:
         self._push_known_tags()
         return {"changed": changed, "merged": merged}
 
+    @_mutating
     def merge_tag(self, old: str, target: str) -> dict:
         target = target.strip()
         if not target or target == old:
@@ -1027,6 +1090,7 @@ class Api:
         self._push_known_tags()
         return {"changed": changed}
 
+    @_mutating
     def delete_tag(self, tag: str) -> dict:
         def transform(tags):
             return [t for t in tags if t != tag]
