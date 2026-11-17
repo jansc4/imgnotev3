@@ -25,13 +25,14 @@ import base64
 import json
 import os
 import random
+import re
 
 import requests
 import webview
 from PyQt6.QtCore import QObject, Qt, pyqtSignal
 from PyQt6.QtWidgets import QApplication
 
-from .doc_extractor import extract as extract_doc_text
+from .doc_extractor import SUPPORTED as DOC_SUPPORTED, extract as extract_doc_text
 from .image_note_file import ImageNoteFile
 from .index_manager import IndexManager
 from .folder_manager import FolderManager
@@ -91,9 +92,9 @@ class _ClipboardBridge(QObject):
 
 class Api:
     def __init__(self):
-        self.password: str = ""
-        self.root_folders: list[str] = []
-        self.window = None  # ustawiane z main.py po create_window()
+        self._password: str = ""
+        self._root_folders: list[str] = []
+        self._window = None  # ustawiane z main.py po create_window()
         # Api() jest tworzone w main() na wątku głównym (przed webview.start()),
         # więc _ClipboardBridge dziedziczy właściwe powinowactwo wątku Qt.
         self._clipboard_bridge = _ClipboardBridge()
@@ -103,7 +104,7 @@ class Api:
         # _thumb_cache). AES-GCM deszyfruje payload atomowo, więc "sama
         # miniatura" i tak wymaga pełnego odczytu — jeden cache na to
         # wystarcza, osobny na miniatury był zbędną duplikacją.
-        self.note_cache = NoteCache()
+        self._note_cache = NoteCache()
 
         # root_folder -> IndexManager / FolderManager. Budowane w
         # _setup_root() przy login()/add_root_folder(). SearchEngine
@@ -112,11 +113,14 @@ class Api:
         # żeby nie złapać martwej referencji po load_or_rebuild() (ten sam
         # problem, przed którym broni się FolderManager trzymając
         # referencję do IndexManagera, nie do IndexFile).
-        self.index_managers: dict[str, IndexManager] = {}
-        self.folder_managers: dict[str, FolderManager] = {}
+        self._index_managers: dict[str, IndexManager] = {}
+        self._folder_managers: dict[str, FolderManager] = {}
+        # S2: ostatnie wyniki własnych dialogów — eksport tylko tam, gdzie wskazał użytkownik
+        self._last_export_folder: str | None = None
+        self._last_tags_save_path: str | None = None
 
     def set_window(self, window):
-        self.window = window
+        self._window = window
 
     def _push_progress(self, current: int, total: int) -> None:
         """Jedyny push-event dla WSZYSTKICH długich operacji (Filar 4, krok
@@ -125,8 +129,8 @@ class Api:
         front sam wie kiedy zaczyna i kończy, bo obejmuje wywołanie własnym
         `await` (patrz progress_modal.js). Sygnatura dokładnie pasuje do
         IndexManager(on_progress=...), więc wpina się bez żadnego lambda."""
-        if self.window:
-            self.window.evaluate_js(
+        if self._window:
+            self._window.evaluate_js(
                 f"window.onLongOperationProgress && window.onLongOperationProgress({current}, {total})"
             )
 
@@ -134,23 +138,48 @@ class Api:
 
     def _setup_root(self, folder: str) -> None:
         mgr = IndexManager(
-            folder, password=self.password or None, note_cache=self.note_cache,
+            folder, password=self._password or None, note_cache=self._note_cache,
             on_progress=self._push_progress,
         )
         mgr.load_or_rebuild()
         mgr.save()
-        self.index_managers[folder] = mgr
-        self.folder_managers[folder] = FolderManager(mgr)
+        self._index_managers[folder] = mgr
+        self._folder_managers[folder] = FolderManager(mgr)
 
     def _folder_manager_for(self, display_path: str) -> FolderManager | None:
-        for root, fm in self.folder_managers.items():
+        for root, fm in self._folder_managers.items():
             if display_path == root or display_path.startswith(root + "/"):
                 return fm
         return None
 
     def _index_manager_for_filepath(self, filepath: str) -> IndexManager | None:
         # pliki leżą płasko w root_folder, więc katalog nadrzędny = klucz wprost
-        return self.index_managers.get(os.path.dirname(filepath))
+        return self._index_managers.get(os.path.dirname(filepath))
+
+    # ---- S2: walidacja ścieżek przychodzących z JS ----------------------
+
+    _NOTE_NAME_RE = re.compile(r"^[0-9a-f]{32}\.imgnote$")
+    _MAX_INPUT_BYTES = 100 * 1024 * 1024
+    _IMAGE_INPUT_EXT = {".png", ".jpg", ".jpeg", ".jfif", ".gif", ".webp", ".bmp"}
+
+    def _require_note_path(self, filepath) -> str:
+        """Tylko <32hex>.imgnote leżący bezpośrednio w zalogowanym root_folder."""
+        if not isinstance(filepath, str) or not self._NOTE_NAME_RE.match(os.path.basename(filepath)):
+            raise ValueError("Nieprawidłowa ścieżka notatki.")
+        parent = os.path.normpath(os.path.dirname(filepath))
+        if parent not in {os.path.normpath(r) for r in self._root_folders}:
+            raise ValueError("Notatka spoza otwartych folderów.")
+        return filepath
+
+    def _require_input_file(self, path, allowed_ext: set) -> str:
+        """Plik wejściowy (obraz/dokument): dozwolone rozszerzenie i limit rozmiaru."""
+        if not isinstance(path, str) or os.path.splitext(path)[1].lower() not in allowed_ext:
+            raise ValueError("Nieobsługiwany typ pliku.")
+        if not os.path.isfile(path):
+            raise ValueError("Plik nie istnieje.")
+        if os.path.getsize(path) > self._MAX_INPUT_BYTES:
+            raise ValueError("Plik jest za duży (limit 100 MB).")
+        return path
 
     def _rewrite_note_tags(self, mgr: IndexManager, filename: str, transform) -> bool:
         """Odczytuje notatkę PRZEZ note_cache (bez podwójnego deszyfrowania,
@@ -159,7 +188,7 @@ class Api:
         rdzeń rename_tag/merge_tag/delete_tag — trzy operacje, jeden helper."""
         path = os.path.join(mgr.root_folder, filename)
         mtime = os.path.getmtime(path)
-        cached = self.note_cache.get_full(path, self.password or None, mtime)
+        cached = self._note_cache.get_full(path, self._password or None, mtime)
         old_tags = list(cached.tags)
         new_tags = transform(old_tags)
         if new_tags == old_tags:
@@ -168,7 +197,7 @@ class Api:
             text=cached.text, image_data=cached.image_data, tags=new_tags,
             title=cached.title, folder_path=cached.folder_path,
         )
-        note.save_to_file(path, password=self.password or None)
+        note.save_to_file(path, password=self._password or None)
         mgr.note_saved(path, note)
         return True
 
@@ -197,20 +226,20 @@ class Api:
             raise ValueError("Nie wybrano folderu.")
         if not password:
             raise ValueError("Hasło nie może być puste.")
-        self.password = password
+        self._password = password
 
         mgr = IndexManager(
-            root_folder, password=self.password or None, note_cache=self.note_cache,
+            root_folder, password=self._password or None, note_cache=self._note_cache,
             on_progress=self._push_progress,
         )
         mgr.load_or_rebuild()
-        self.index_managers[root_folder] = mgr
-        self.folder_managers[root_folder] = FolderManager(mgr)
+        self._index_managers[root_folder] = mgr
+        self._folder_managers[root_folder] = FolderManager(mgr)
 
         if mgr.password_verified:
             mgr.save()
-            if root_folder not in self.root_folders:
-                self.root_folders.append(root_folder)
+            if root_folder not in self._root_folders:
+                self._root_folders.append(root_folder)
             self._push_known_tags()
 
         return {"password_verified": mgr.password_verified}
@@ -221,50 +250,50 @@ class Api:
         pierwszym. Dopiero teraz zapisujemy indeks (czyli faktycznie
         "ustawiamy" hasło do tego vaulta) — do tego momentu na dysku nic
         się nie zmieniło, więc literówka w pierwszym polu nic nie kosztuje."""
-        mgr = self.index_managers.get(root_folder)
+        mgr = self._index_managers.get(root_folder)
         if not mgr:
             raise ValueError(f"Brak sesji logowania dla: {root_folder} (wywołaj najpierw login()).")
-        if password_confirm != self.password:
+        if password_confirm != self._password:
             raise ValueError("Hasła nie są identyczne.")
         mgr.save()
-        if root_folder not in self.root_folders:
-            self.root_folders.append(root_folder)
+        if root_folder not in self._root_folders:
+            self._root_folders.append(root_folder)
         self._push_known_tags()
         return True
 
     def pick_folder(self) -> str | None:
         """Sam wybór folderu (dialog), bez żadnych efektów ubocznych —
         używane przez ekran logowania PRZED tym, jak hasło jest znane."""
-        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         return result[0] if result else None
 
     # ── Foldery ──────────────────────────────────────────────────
 
     def list_root_folders(self) -> list[str]:
-        return list(self.root_folders)
+        return list(self._root_folders)
 
     def add_root_folder(self) -> str | None:
         """Dodatkowy root (multi-root) — dziś używane rzadko (jeden root
         w praktyce), zostaje na przyszłość."""
-        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
         if not result:
             return None
         folder = result[0]
-        if folder not in self.root_folders:
-            self.root_folders.append(folder)
+        if folder not in self._root_folders:
+            self._root_folders.append(folder)
             self._setup_root(folder)
             self._push_known_tags()
         return folder
 
     def remove_root_folder(self, folder: str) -> None:
         """Odepnij folder z listy — NIE usuwa niczego z dysku."""
-        if folder in self.root_folders:
-            self.root_folders.remove(folder)
-        self.index_managers.pop(folder, None)
-        self.folder_managers.pop(folder, None)
+        if folder in self._root_folders:
+            self._root_folders.remove(folder)
+        self._index_managers.pop(folder, None)
+        self._folder_managers.pop(folder, None)
 
     def get_folder_tree(self) -> list[dict]:
-        return [fm.get_tree_root_node() for fm in self.folder_managers.values()]
+        return [fm.get_tree_root_node() for fm in self._folder_managers.values()]
 
     def create_subfolder(self, parent: str, name: str) -> str:
         fm = self._folder_manager_for(parent)
@@ -311,7 +340,7 @@ class Api:
         da się przemianować/przenieść (to nie wirtualna ścieżka w indeksie,
         tylko sam root_folder; trzeba by fizycznie przenieść katalog na
         dysku i przepiąć IndexManager, poza zakresem tej rundy)."""
-        if folder in self.root_folders:
+        if folder in self._root_folders:
             raise ValueError("To folder główny — zmiana nazwy/przeniesienie niedostępne.")
         fm = self._folder_manager_for(folder)
         if not fm:
@@ -343,12 +372,12 @@ class Api:
 
             path = os.path.join(mgr.root_folder, filename)
             mtime = os.path.getmtime(path)
-            cached = self.note_cache.get_full(path, self.password or None, mtime)
+            cached = self._note_cache.get_full(path, self._password or None, mtime)
             note = ImageNoteFile(
                 text=cached.text, image_data=cached.image_data, tags=cached.tags,
                 title=cached.title, folder_path=updated_folder_path,
             )
-            note.save_to_file(path, password=self.password or None)
+            note.save_to_file(path, password=self._password or None)
             mgr.note_saved(path, note)
             self._push_progress(i, total)
 
@@ -389,6 +418,7 @@ class Api:
         """Przenosi POJEDYNCZĄ notatkę do innego folderu — nazwa pliku na
         dysku (losowa) się nie zmienia, tylko folder_path w zaszyfrowanym
         payloadzie. Bez bulk-progresu (jeden plik, nie warto pokazywać modala)."""
+        self._require_note_path(filepath)
         fm = self._folder_manager_for(new_folder)
         if not fm:
             raise ValueError(f"Nieznany folder docelowy: {new_folder}")
@@ -398,14 +428,14 @@ class Api:
         if not mgr:
             raise ValueError(f"Nieznany plik: {filepath}")
         mtime = os.path.getmtime(filepath)
-        cached = self.note_cache.get_full(filepath, self.password or None, mtime)
+        cached = self._note_cache.get_full(filepath, self._password or None, mtime)
         if cached.folder_path == new_folder_path:
             return
         note = ImageNoteFile(
             text=cached.text, image_data=cached.image_data, tags=cached.tags,
             title=cached.title, folder_path=new_folder_path,
         )
-        note.save_to_file(filepath, password=self.password or None)
+        note.save_to_file(filepath, password=self._password or None)
         mgr.note_saved(filepath, note)
         fm.note_saved(new_folder_path)
         mgr.save()
@@ -414,7 +444,7 @@ class Api:
         """Usuwa WSZYSTKIE notatki pod tą wirtualną ścieżką (siebie i
         wszystkich podfolderów) — nie ma czegoś do "opróżnienia" osobno,
         drzewo jest emergentne z folder_path."""
-        if folder in self.root_folders:
+        if folder in self._root_folders:
             raise ValueError("To folder główny — najpierw go odepnij (remove_root_folder).")
         fm = self._folder_manager_for(folder)
         if not fm:
@@ -427,7 +457,7 @@ class Api:
             if os.path.exists(path):
                 os.remove(path)
             mgr.note_deleted(path)
-            self.note_cache.invalidate(path)
+            self._note_cache.invalidate(path)
             self._push_progress(i, total)
 
         mgr.save()
@@ -447,7 +477,7 @@ class Api:
         jest) zamiast osobnego os.path.getmtime() na każdy plik jak dawniej.
         """
         notes: list[dict] = []
-        for fm in self.folder_managers.values():
+        for fm in self._folder_managers.values():
             notes.extend(fm.list_all_notes())
 
         if sort_by == "newest":
@@ -492,12 +522,13 @@ class Api:
         )
 
     def get_note(self, filepath: str) -> dict:
+        self._require_note_path(filepath)
         mtime = os.path.getmtime(filepath)
-        note = self.note_cache.get_full(filepath, self.password or None, mtime)
+        note = self._note_cache.get_full(filepath, self._password or None, mtime)
         # display_path do UI (np. Viewer musi wiedzieć, do jakiego folderu
         # zapisać przy edycji inline — nie da się tego odtworzyć z samego
         # filepath, bo w v4 wszystkie pliki leżą płasko w root_folder).
-        fm = self.folder_managers.get(os.path.dirname(filepath))
+        fm = self._folder_managers.get(os.path.dirname(filepath))
         folder = fm.display_path(note.folder_path) if fm else ""
         return {
             "filepath": filepath,
@@ -517,8 +548,9 @@ class Api:
         mniejszym przez CSS). Przez note_cache, więc darmowa przy
         changed/new podczas reperacji."""
         try:
+            self._require_note_path(filepath)
             mtime = os.path.getmtime(filepath)
-            cached = self.note_cache.get_full(filepath, self.password or None, mtime)
+            cached = self._note_cache.get_full(filepath, self._password or None, mtime)
         except Exception:
             return ""
         return base64.b64encode(cached.thumbnail_data).decode() if cached.thumbnail_data else ""
@@ -556,12 +588,14 @@ class Api:
             title=safe_title, folder_path=folder_path,
         )
 
+        if original_filepath:
+            self._require_note_path(original_filepath)
         if original_filepath and os.path.exists(original_filepath):
             target = original_filepath
         else:
             target = os.path.join(mgr.root_folder, ImageNoteFile.new_filename())
 
-        note.save_to_file(target, password=self.password or None)
+        note.save_to_file(target, password=self._password or None)
         mgr.note_saved(target, note)
         fm.note_saved(folder_path)
         mgr.save()  # indeks na dysku zawsze aktualny, nie tylko "po następnym logowaniu"
@@ -570,6 +604,7 @@ class Api:
         return target
 
     def delete_note(self, filepath: str) -> None:
+        self._require_note_path(filepath)
         mgr = self._index_manager_for_filepath(filepath)
         os.remove(filepath)
         if mgr:
@@ -615,11 +650,15 @@ class Api:
     def export_notes(self, filepaths: list[str], output_root: str, fmt: str) -> dict:
         """fmt: "png" | "txt" | "png_txt" | "pdf". Kolizje nazw (ten sam
         tytuł, ten sam katalog wyjściowy) rozwiązywane numerycznym sufiksem."""
+        if not output_root or output_root != self._last_export_folder:
+            raise ValueError("Folder eksportu musi pochodzić z okna wyboru folderu.")
+        for filepath in filepaths:
+            self._require_note_path(filepath)
         used_names: dict[str, set[str]] = {}
         total = len(filepaths)
         for i, filepath in enumerate(filepaths, start=1):
             mtime = os.path.getmtime(filepath)
-            note = self.note_cache.get_full(filepath, self.password or None, mtime)
+            note = self._note_cache.get_full(filepath, self._password or None, mtime)
 
             out_dir = os.path.join(output_root, note.folder_path) if note.folder_path else output_root
             os.makedirs(out_dir, exist_ok=True)
@@ -735,8 +774,9 @@ class Api:
     def pick_export_folder(self) -> str | None:
         """Dialog wyboru folderu docelowego eksportu — osobna nazwa niż
         pick_folder(), żeby front nie mylił z wyborem roota vaulta."""
-        result = self.window.create_file_dialog(webview.FOLDER_DIALOG)
-        return result[0] if result else None
+        result = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        self._last_export_folder = result[0] if result else None
+        return self._last_export_folder
 
     # ── Wyszukiwanie ─────────────────────────────────────────────
 
@@ -745,12 +785,12 @@ class Api:
         ewaluowane na indeksie odwróconym, tekst dotyka tylko kandydatów
         po filtrze tagów (patrz backendV4/search_engine.py)."""
         results = []
-        for root, mgr in self.index_managers.items():
-            fm = self.folder_managers[root]
+        for root, mgr in self._index_managers.items():
+            fm = self._folder_managers[root]
             engine = SearchEngine(
                 mgr.index, root,
-                note_loader=lambda p: self.note_cache.get_full(
-                    p, self.password or None, os.path.getmtime(p)
+                note_loader=lambda p: self._note_cache.get_full(
+                    p, self._password or None, os.path.getmtime(p)
                 ).text,
             )
             for r in engine.search(tag_query, text_query):
@@ -776,7 +816,7 @@ class Api:
 
     def get_known_tags(self) -> list[str]:
         tags: set[str] = set()
-        for mgr in self.index_managers.values():
+        for mgr in self._index_managers.values():
             tags.update(mgr.index.tag_index.keys())
         return sorted(tags, key=str.lower)
 
@@ -788,9 +828,9 @@ class Api:
         self._push_known_tags()
 
     def _push_known_tags(self) -> None:
-        if self.window:
+        if self._window:
             tags = self.get_known_tags()
-            self.window.evaluate_js(
+            self._window.evaluate_js(
                 f"window.onTagsUpdated && window.onTagsUpdated({json.dumps(tags)})"
             )
 
@@ -798,6 +838,7 @@ class Api:
 
     def extract_doc(self, path: str) -> dict:
         """Ekstrakcja tekstu z pliku (pdf/docx/odt/rtf/txt/md), jak v2."""
+        self._require_input_file(path, DOC_SUPPORTED)
         text, info = extract_doc_text(path)
         return {"text": text, "info": info}
 
@@ -898,15 +939,16 @@ class Api:
     # ── Dialogi natywne (fallback dla DnD z systemu, Etap 0b) ───────
 
     def open_file_dialog(self) -> str | None:
-        result = self.window.create_file_dialog(webview.OPEN_DIALOG)
+        result = self._window.create_file_dialog(webview.OPEN_DIALOG)
         return result[0] if result else None
 
     def read_binary_file(self, path: str) -> str:
         """
-        Odczyt dowolnego pliku jako base64 — używane dla obrazków wybranych
-        przez open_file_dialog() lub upuszczonych z systemu (Etap 0b,
-        pywebviewFullPath).
+        Odczyt obrazka jako base64 — wybranego przez open_file_dialog() lub
+        upuszczonego z systemu (Etap 0b, pywebviewFullPath). S2: tylko
+        rozszerzenia obrazów i limit rozmiaru.
         """
+        self._require_input_file(path, self._IMAGE_INPUT_EXT)
         with open(path, "rb") as f:
             return base64.b64encode(f.read()).decode()
 
@@ -931,7 +973,7 @@ class Api:
     # razem z nim; `save_tags_dialog` (eksport) zostaje.
 
     def count_tag_usage(self, tag: str) -> int:
-        return sum(len(mgr.index.tag_index.get(tag, [])) for mgr in self.index_managers.values())
+        return sum(len(mgr.index.tag_index.get(tag, [])) for mgr in self._index_managers.values())
 
     def rename_tag(self, old: str, new: str) -> dict:
         new = new.strip()
@@ -943,7 +985,7 @@ class Api:
 
         changed = 0
         merged = False
-        for mgr in self.index_managers.values():
+        for mgr in self._index_managers.values():
             filenames = list(mgr.index.tag_index.get(old, []))  # kopia - mutujemy tag_index w trakcie
             if not filenames:
                 continue
@@ -971,7 +1013,7 @@ class Api:
             return tags
 
         changed = 0
-        for mgr in self.index_managers.values():
+        for mgr in self._index_managers.values():
             filenames = list(mgr.index.tag_index.get(old, []))
             if not filenames:
                 continue
@@ -990,7 +1032,7 @@ class Api:
             return [t for t in tags if t != tag]
 
         changed = 0
-        for mgr in self.index_managers.values():
+        for mgr in self._index_managers.values():
             filenames = list(mgr.index.tag_index.get(tag, []))
             if not filenames:
                 continue
@@ -1007,10 +1049,12 @@ class Api:
     def export_tags_json(self, path: str) -> dict:
         """Zero deszyfrowania — liczby użycia to długości list w
         tag_index, już policzone, nie trzeba niczego skanować."""
+        if not path or path != self._last_tags_save_path:
+            raise ValueError("Ścieżka zapisu musi pochodzić z okna zapisu.")
         import datetime as _dt
         usage: dict[str, int] = {}
         total_files = 0
-        for mgr in self.index_managers.values():
+        for mgr in self._index_managers.values():
             total_files += len(mgr.index.notes)
             for tag, filenames in mgr.index.tag_index.items():
                 usage[tag] = usage.get(tag, 0) + len(filenames)
@@ -1027,7 +1071,8 @@ class Api:
         return {"tags_count": len(tags)}
 
     def save_tags_dialog(self) -> str | None:
-        result = self.window.create_file_dialog(
+        result = self._window.create_file_dialog(
             webview.SAVE_DIALOG, save_filename="tagi_export.json"
         )
-        return result[0] if result else None
+        self._last_tags_save_path = result[0] if result else None
+        return self._last_tags_save_path

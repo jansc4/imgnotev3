@@ -33,8 +33,8 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = str(Path(tmp))
         api = Api()
-        api.password = PASSWORD
-        api.root_folders.append(root)
+        api._password = PASSWORD
+        api._root_folders.append(root)
         api._setup_root(root)  # to samo co login() robi po wyborze folderu
         print("OK  _setup_root")
 
@@ -155,11 +155,11 @@ def test_progress_pushed_during_setup_root():
             note.save_to_file(str(root / ImageNoteFile.new_filename()), password=PASSWORD)
 
         api = Api()
-        api.password = PASSWORD
-        api.window = _FakeWindow()
+        api._password = PASSWORD
+        api._window = _FakeWindow()
         api._setup_root(str(root))
 
-        progress_calls = [c for c in api.window.calls if "onLongOperationProgress" in c]
+        progress_calls = [c for c in api._window.calls if "onLongOperationProgress" in c]
         assert progress_calls == [
             "window.onLongOperationProgress && window.onLongOperationProgress(1, 3)",
             "window.onLongOperationProgress && window.onLongOperationProgress(2, 3)",
@@ -180,8 +180,8 @@ def test_bulk_tag_actions_and_delete_folder():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         api = Api()
-        api.password = PASSWORD
-        api.root_folders.append(str(root))
+        api._password = PASSWORD
+        api._root_folders.append(str(root))
         api._setup_root(str(root))
 
         p1 = api.save_note(str(root), "A", "", ["stary", "wspolny"])
@@ -215,6 +215,12 @@ def test_bulk_tag_actions_and_delete_folder():
         print("OK  delete_tag")
 
         export_path = root.parent / "export.json"
+        try:
+            api.export_tags_json(str(export_path))
+            raise AssertionError("export_tags_json przyjął ścieżkę spoza dialogu")
+        except ValueError:
+            pass
+        api._last_tags_save_path = str(export_path)  # symulacja save_tags_dialog()
         info = api.export_tags_json(str(export_path))
         assert export_path.exists()
         import json as _json
@@ -264,8 +270,8 @@ def test_count_notes_in_folder():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         api = Api()
-        api.password = PASSWORD
-        api.root_folders.append(str(root))
+        api._password = PASSWORD
+        api._root_folders.append(str(root))
         api._setup_root(str(root))
 
         sub = api.create_subfolder(str(root), "Sub")
@@ -302,7 +308,7 @@ def test_two_phase_login_fresh_vault():
         result = api.login(str(root), PASSWORD)
         assert result == {"password_verified": False}, "pusty root: nic do zweryfikowania"
         assert not index_path.exists(), "login() na świeżym vaulcie nie może niczego zapisać"
-        assert str(root) not in api.root_folders, "root_folders dopiero po potwierdzeniu"
+        assert str(root) not in api._root_folders, "root_folders dopiero po potwierdzeniu"
         print("OK  login() na świeżym vaulcie: nic nie zapisuje, zwraca password_verified=False")
 
         try:
@@ -317,7 +323,7 @@ def test_two_phase_login_fresh_vault():
         ok = api.confirm_new_vault_password(str(root), PASSWORD)
         assert ok is True
         assert index_path.exists(), "poprawne potwierdzenie musi zapisać indeks"
-        assert str(root) in api.root_folders
+        assert str(root) in api._root_folders
         print("OK  confirm_new_vault_password z poprawnym hasłem zapisuje indeks")
 
 
@@ -328,13 +334,13 @@ def test_two_phase_login_existing_vault():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         bootstrap = Api()
-        bootstrap.password = PASSWORD
+        bootstrap._password = PASSWORD
         bootstrap._setup_root(str(root))  # tworzy realny, zapisany indeks
 
         api = Api()
         result = api.login(str(root), PASSWORD)
         assert result == {"password_verified": True}
-        assert str(root) in api.root_folders
+        assert str(root) in api._root_folders
         print("OK  login() na istniejącym vaulcie: od razu zweryfikowane i zapisane")
 
         api_wrong = Api()
@@ -354,8 +360,8 @@ def test_rename_move_folder_and_note():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         api = Api()
-        api.password = PASSWORD
-        api.root_folders.append(str(root))
+        api._password = PASSWORD
+        api._root_folders.append(str(root))
         api._setup_root(str(root))
 
         klienci = api.create_subfolder(str(root), "Klienci")
@@ -431,8 +437,8 @@ def test_search_notes_returns_correct_folder():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         api = Api()
-        api.password = PASSWORD
-        api.root_folders.append(str(root))
+        api._password = PASSWORD
+        api._root_folders.append(str(root))
         api._setup_root(str(root))
 
         klienci = api.create_subfolder(str(root), "Klienci")
