@@ -469,10 +469,27 @@ class Api:
             return []
         return fm.list_notes_in_and_direct_children(folder)
 
+    _MD_TAGS = {
+        "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "em", "b", "i",
+        "del", "s", "code", "pre", "blockquote", "ul", "ol", "li", "a",
+        "table", "thead", "tbody", "tr", "th", "td",
+    }
+    _MD_ATTRS = {"a": {"href", "title"}, "code": {"class"}, "th": {"style"}, "td": {"style"}}
+
     def render_markdown(self, text: str) -> str:
-        """Ten sam silnik co v2 (`markdown` z extensions tables/fenced_code/nl2br)."""
+        """Ten sam silnik co v2 (`markdown` z extensions tables/fenced_code/nl2br).
+        Wynik przez nh3: bez surowego HTML/skryptów, bez <img> (zero żądań sieciowych)."""
         import markdown as _md
-        return _md.markdown(text, extensions=["tables", "fenced_code", "nl2br"])
+        import nh3
+        html = _md.markdown(text or "", extensions=["tables", "fenced_code", "nl2br"])
+        return nh3.clean(
+            html,
+            tags=self._MD_TAGS,
+            attributes=self._MD_ATTRS,
+            url_schemes={"http", "https", "mailto"},
+            filter_style_properties={"text-align"},
+            link_rel="noopener noreferrer",
+        )
 
     def get_note(self, filepath: str) -> dict:
         mtime = os.path.getmtime(filepath)

@@ -8,6 +8,7 @@ dependencies = [
     "cachetools>=7.1.7",
     "cryptography>=49.0.0",
     "markdown>=3.10.2",
+    "nh3>=0.3.8",
     "odfpy>=1.4.1",
     "pillow>=12.3.0",
     "pymupdf>=1.28.0",

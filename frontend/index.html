@@ -2,6 +2,9 @@
 <html lang="pl">
 <head>
   <meta charset="UTF-8">
+  <!-- S1, druga warstwa: blokuje inline skrypty/handlery i zdalne zasoby.
+       'unsafe-eval' wymagane przez most pywebview (new Function / eval w api.js). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'">
   <title>ImgNote v3</title>
   <link rel="stylesheet" href="style.css">
 </head>
