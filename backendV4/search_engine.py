@@ -175,7 +175,7 @@ class SearchEngine:
         note_loader(filepath) -> pełny tekst notatki. Wstrzyknięty, żeby
         SearchEngine nie wiedział NIC o haśle ani o cache'u — to sprawa
         wywołującego (przyszłe Api), jak dostarczyć tekst, np.:
-            note_loader=lambda p: note_cache.get_content(p, password, os.path.getmtime(p)).text
+            note_loader=lambda p: note_cache.get_content(p, vault_key, os.path.getmtime(p)).text
         SearchEngine woła note_loader TYLKO gdy text_query jest niepuste —
         czyste tag_query nigdy nie dotyka note_loader w ogóle.
         """

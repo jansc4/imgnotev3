@@ -23,6 +23,9 @@ from backendV4.index_manager import IndexManager
 
 PASSWORD = "haslo123"
 
+from _v4 import new_key  # noqa: E402  (szybkie parametry Argon2id w testach)
+KEY = new_key(PASSWORD)
+
 
 class _FakeIndex:
     def __init__(self, notes):
@@ -212,7 +215,7 @@ def test_real_index_manager_survives_reload_without_stale_reference():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         note1 = ImageNoteFile(text="", title="Pierwsza", folder_path="Klienci", tags=[])
-        note1.save_to_file(str(root / ImageNoteFile.new_filename()), password=PASSWORD)
+        note1.save_to_file(str(root / ImageNoteFile.new_filename()), KEY)
 
         mgr = IndexManager(str(root), password=PASSWORD)
         mgr.load_or_rebuild()
@@ -223,7 +226,7 @@ def test_real_index_manager_survives_reload_without_stale_reference():
 
         # druga notatka, w NOWYM folderze, dopisana PO tym jak fm powstał
         note2 = ImageNoteFile(text="", title="Druga", folder_path="Archiwum", tags=[])
-        note2.save_to_file(str(root / ImageNoteFile.new_filename()), password=PASSWORD)
+        note2.save_to_file(str(root / ImageNoteFile.new_filename()), KEY)
 
         mgr.load_or_rebuild()  # to podmienia mgr.index na nowy obiekt
 

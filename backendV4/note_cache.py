@@ -1,25 +1,15 @@
 """
-note_cache.py — jeden cache notatek zamiast dzisiejszych dwóch niezależnych
-słowników (_note_cache/_thumb_cache w backend/api.py), backendV4.
+note_cache.py — cache notatek w pamięci (backendV4, format v4).
 
-Dwie warstwy kosztu, jeden obiekt na notatkę (CachedNote):
-- TANIA: title, folder_path, mtime — dostępne bez deszyfrowania pliku,
-  bo już są w IndexManager.index.notes (jeden Scrypt na cały indeks przy
-  starcie, nie N). Wystarcza galerii/Home do wyrenderowania listy.
-- DROGA: text, tags, image_data — dostępne dopiero po pełnym odszyfrowaniu
-  JEDNEGO konkretnego pliku (Scrypt + AES-GCM na payloadzie). AES-GCM
-  deszyfruje payload atomowo — nie da się dostać samego text bez image_data,
-  więc te trzy pola zawsze hydratują się razem, jednym wywołaniem.
+Trzy niezależne LRU, każde dla innej sekcji pliku v4 (FORMAT_V4.md):
+- `_cache`  : filepath -> CachedNote (title, folder_path, text, tags, has_image) — sekcja meta;
+- `_thumbs` : filepath -> (mtime, miniatura WebP | None) — sekcja miniatury, małe;
+- `_images` : filepath -> (mtime, bajty obrazu) — sekcja obrazu, budżet w bajtach (P2).
+Każdą sekcję da się odszyfrować osobno, więc galeria nie dotyka obrazów,
+a wyszukiwanie nie dotyka ani obrazów, ani miniatur.
 
-Etap 2 audytu (P1, P2, S5):
-- pełne obrazy trzymane OSOBNO (`_images`), w LRU z budżetem w bajtach —
-  wpis w `_cache` nigdy nie trzyma image_data, więc eksmisja obrazu
-  faktycznie zwalnia pamięć, a text/tags/miniatura zostają;
-- miniatura generowana leniwie (get_thumbnail), nie przy każdej hydratacji;
-  wyjątek: put_full z reperacji, gdzie obraz i tak jest w pamięci;
-- RLock wokół dostępu do obu LRU (pywebview woła js_api z wielu wątków),
-  deszyfrowanie i generowanie miniatury poza blokadą.
-Świeżość sprawdzamy sami, po mtime — cachetools odpowiada tylko za eksmisję.
+Świeżość po mtime sprawdzamy sami; cachetools odpowiada tylko za eksmisję.
+RLock wokół LRU (pywebview woła js_api z wielu wątków), deszyfrowanie poza blokadą.
 """
 import threading
 from dataclasses import dataclass, replace
@@ -27,9 +17,10 @@ from dataclasses import dataclass, replace
 from cachetools import LRUCache
 
 from .image_note_file import ImageNoteFile
-from .thumbnail import generate_thumbnail
+from .vault_key import VaultKey
 
-DEFAULT_MAXSIZE = 2000                         # wpisy bez pełnych obrazów (meta+tekst+miniatura)
+DEFAULT_MAXSIZE = 2000                         # wpisy meta (tekst + tagi)
+DEFAULT_THUMB_MAXSIZE = 5000                   # miniatury WebP, kilka-kilkanaście KB każda
 DEFAULT_IMAGE_BUDGET = 256 * 1024 * 1024       # bajty pełnych obrazów naraz
 
 
@@ -39,41 +30,30 @@ class CachedNote:
     mtime: float
     title: str
     folder_path: str
-    # Poniżej: warstwa DROGA. None dopóki nikt nie zażądał pełnej treści.
-    # image_data wypełniane tylko w kopii zwracanej z get_full — wpis w
-    # cache go nie trzyma (patrz NoteCache._images).
     text: str | None = None
     tags: list[str] | None = None
+    # wypełniane tylko w kopii zwracanej z get_full — wpis w cache go nie trzyma
     image_data: bytes | None = None
-    thumbnail_data: bytes | None = None
-    # True, gdy miniaturę już próbowano wygenerować (None = brak obrazu/nieczytelny)
-    thumbnail_done: bool = False
-    # czy notatka w ogóle ma obraz (rozróżnia "brak obrazu" od "obraz wyeksmitowany")
     has_image: bool = False
 
     @property
     def is_fully_hydrated(self) -> bool:
-        """True <=> text/tags są wczytane i aktualne (hydratacja wypełnia je
-        razem, jednym odczytem AES-GCM)."""
+        """True <=> sekcja meta (text/tags) wczytana i aktualna."""
         return self.text is not None
 
 
 class NoteCache:
-    """Cały dostęp do cache idzie przez tę klasę, nikt na zewnątrz nie
-    dotyka _cache/_images bezpośrednio (reguła "sprawdź mtime przed
-    zwróceniem" nie da się ominąć)."""
-
-    def __init__(self, maxsize: int = DEFAULT_MAXSIZE, image_budget: int = DEFAULT_IMAGE_BUDGET):
+    def __init__(self, maxsize: int = DEFAULT_MAXSIZE, image_budget: int = DEFAULT_IMAGE_BUDGET,
+                 thumb_maxsize: int = DEFAULT_THUMB_MAXSIZE):
         self._cache: LRUCache = LRUCache(maxsize=maxsize)
-        # filepath -> (mtime, image_data); rozmiar wpisu = długość bajtów
+        self._thumbs: LRUCache = LRUCache(maxsize=thumb_maxsize)
         self._images: LRUCache = LRUCache(maxsize=image_budget, getsizeof=lambda v: max(1, len(v[1])))
         self._lock = threading.RLock()
 
     # ---- tania warstwa: title/folder_path/mtime, bez deszyfrowania -----
 
     def get_metadata(self, filepath: str, title: str, folder_path: str, mtime: float) -> CachedNote:
-        """Zero I/O. Wpis z pasującym mtime zwracany bez zmian (z już
-        zhydratowaną warstwą); inaczej nowy, pusty CachedNote."""
+        """Zero I/O. Wpis z pasującym mtime zwracany bez zmian; inaczej nowy, pusty."""
         with self._lock:
             cached = self._cache.get(filepath)
             if cached is not None and cached.mtime == mtime:
@@ -92,8 +72,7 @@ class NoteCache:
         return None
 
     def _cached_image(self, filepath: str, entry: CachedNote) -> bytes | None:
-        """Bajty obrazu dla świeżego wpisu; b"" gdy notatka nie ma obrazu,
-        None gdy obraz trzeba odszyfrować ponownie (wyeksmitowany)."""
+        """b"" gdy notatka nie ma obrazu, None gdy obraz trzeba odszyfrować (wyeksmitowany)."""
         if not entry.has_image:
             return b""
         hit = self._images.get(filepath)
@@ -101,12 +80,10 @@ class NoteCache:
             return hit[1]
         return None
 
-    def _store(self, filepath: str, mtime: float, note: ImageNoteFile,
-               keep_image: bool, thumbnail: bytes | None, thumbnail_done: bool) -> CachedNote:
+    def _store(self, filepath: str, mtime: float, note: ImageNoteFile, keep_image: bool) -> CachedNote:
         entry = CachedNote(
             filepath=filepath, mtime=mtime, title=note.title, folder_path=note.folder_path,
-            text=note.text, tags=note.tags, thumbnail_data=thumbnail,
-            thumbnail_done=thumbnail_done, has_image=bool(note.image_data),
+            text=note.text, tags=note.tags, has_image=note.image_size > 0,
         )
         with self._lock:
             self._cache[filepath] = entry
@@ -116,66 +93,62 @@ class NoteCache:
                     self._images[filepath] = (mtime, note.image_data)
                 except ValueError:
                     pass  # obraz większy niż cały budżet — nie cache'ujemy
+            if not note.meta_only:
+                self._thumbs[filepath] = (mtime, note.thumbnail_data)
+            else:
+                hit = self._thumbs.get(filepath)
+                if hit is not None and hit[0] != mtime:
+                    self._thumbs.pop(filepath, None)
         return entry
 
-    def _load(self, filepath: str, password: str | None, mtime: float) -> tuple[CachedNote, bytes]:
-        # deszyfrowanie poza blokadą — to jest ta droga część
-        note = ImageNoteFile.load_from_file(filepath, password=password)
-        entry = self._store(filepath, mtime, note, keep_image=True, thumbnail=None, thumbnail_done=False)
-        return entry, note.image_data
+    # ---- droga warstwa: odszyfrowanie konkretnych sekcji na żądanie -----
 
-    # ---- droga warstwa: pełna treść, deszyfrowanie na żądanie ----------
-
-    def get_content(self, filepath: str, password: str | None, mtime: float) -> CachedNote:
-        """title/folder_path/text/tags bez gwarancji image_data — dla
-        wyszukiwania tekstowego: nie deszyfruje ponownie tylko dlatego,
-        że obraz wypadł z budżetu."""
+    def get_content(self, filepath: str, key: VaultKey, mtime: float) -> CachedNote:
+        """Sama sekcja meta (wyszukiwanie tekstowe, operacje na tagach/folderach)."""
         with self._lock:
             entry = self._fresh_entry(filepath, mtime)
         if entry is not None:
             return entry
-        return self._load(filepath, password, mtime)[0]
+        note = ImageNoteFile.load_meta(filepath, key)
+        return self._store(filepath, mtime, note, keep_image=False)
 
-    def get_full(self, filepath: str, password: str | None, mtime: float) -> CachedNote:
-        """Kopia wpisu z wypełnionym image_data. `mtime` podawane z zewnątrz,
-        żeby wywołujący liczył stat() raz."""
+    def get_full(self, filepath: str, key: VaultKey, mtime: float) -> CachedNote:
+        """Kopia wpisu z wypełnionym image_data (podgląd, eksport)."""
         with self._lock:
             entry = self._fresh_entry(filepath, mtime)
             image = self._cached_image(filepath, entry) if entry is not None else None
-        if entry is None or image is None:
-            entry, image = self._load(filepath, password, mtime)
-        return replace(entry, image_data=image)
+        if entry is not None and image is not None:
+            return replace(entry, image_data=image)
+        note = ImageNoteFile.load_from_file(filepath, key)
+        entry = self._store(filepath, mtime, note, keep_image=True)
+        return replace(entry, image_data=note.image_data)
 
-    def get_thumbnail(self, filepath: str, password: str | None, mtime: float) -> bytes | None:
-        """Leniwa miniatura (P1): generowana raz, przy pierwszym żądaniu."""
+    def get_thumbnail(self, filepath: str, key: VaultKey, mtime: float) -> bytes | None:
+        """Sekcja miniatury — bez odszyfrowania obrazu i bez meta."""
         with self._lock:
-            entry = self._fresh_entry(filepath, mtime)
-            if entry is not None and entry.thumbnail_done:
-                return entry.thumbnail_data
-        full = self.get_full(filepath, password, mtime)
-        thumb = generate_thumbnail(full.image_data)
+            hit = self._thumbs.get(filepath)
+            if hit is not None and hit[0] == mtime:
+                return hit[1]
+        thumb = ImageNoteFile.load_thumbnail(filepath, key)
         with self._lock:
-            entry = self._fresh_entry(filepath, mtime)
-            if entry is not None:
-                entry.thumbnail_data = thumb
-                entry.thumbnail_done = True
+            self._thumbs[filepath] = (mtime, thumb)
         return thumb
 
-    def put_full(self, filepath: str, mtime: float, note: ImageNoteFile,
-                 keep_image: bool = True, with_thumbnail: bool = False) -> CachedNote:
-        """Populacja z JUŻ odszyfrowanego note — zero deszyfrowania.
-        Reperacja woła z keep_image=False (P2: nie trzymamy N pełnych obrazów)
-        i with_thumbnail=True (obraz i tak jest w pamięci, koszt to tylko resize)."""
-        thumb = generate_thumbnail(note.image_data) if with_thumbnail else None
-        return self._store(filepath, mtime, note, keep_image, thumb, thumbnail_done=with_thumbnail)
+    def put_full(self, filepath: str, mtime: float, note: ImageNoteFile) -> CachedNote:
+        """Populacja z pełnego, już odszyfrowanego/zapisanego note — zero deszyfrowania."""
+        return self._store(filepath, mtime, note, keep_image=True)
+
+    def put_meta(self, filepath: str, mtime: float, note: ImageNoteFile) -> CachedNote:
+        """Populacja z note meta_only (reperacja indeksu, rewrite_meta)."""
+        return self._store(filepath, mtime, note, keep_image=False)
 
     # ---- inwalidacja -----------------------------------------------------
 
     def invalidate(self, filepath: str) -> None:
-        """Wołane po zapisie/usunięciu notatki."""
         with self._lock:
             self._cache.pop(filepath, None)
             self._images.pop(filepath, None)
+            self._thumbs.pop(filepath, None)
 
     def __len__(self) -> int:
         with self._lock:

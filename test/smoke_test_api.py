@@ -18,6 +18,9 @@ from backendV4.api import Api
 
 PASSWORD = "haslo123"
 
+from _v4 import new_key  # noqa: E402  (szybkie parametry Argon2id w testach)
+KEY = new_key(PASSWORD)
+
 
 class _FakeWindow:
     """Zamiast prawdziwego okna pywebview — zbiera wywołania evaluate_js,
@@ -152,7 +155,7 @@ def test_progress_pushed_during_setup_root():
         root = Path(tmp)
         for i in range(3):
             note = ImageNoteFile(text="", title=f"N{i}", folder_path="", tags=[])
-            note.save_to_file(str(root / ImageNoteFile.new_filename()), password=PASSWORD)
+            note.save_to_file(str(root / ImageNoteFile.new_filename()), KEY)
 
         api = Api()
         api._password = PASSWORD

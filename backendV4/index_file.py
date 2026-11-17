@@ -1,33 +1,32 @@
 """
-index_file.py — format pliku indeksu (.imgidx) dla backendV4.
+index_file.py — format pliku indeksu (.imgidx) v2 dla backendV4. Spec: FORMAT_V4.md.
 
-Osobna koperta kryptograficzna niż `.imgnote` — świadoma duplikacja logiki
-nagłówka/Scrypt/AES-GCM względem image_note_file.py, wybrana zamiast
-wspólnej abstrakcji, żeby oba formaty były w pełni niezależne i osobno
-testowalne (patrz dyskusja w V4_REDESIGN_PLAN.md).
+Osobna koperta niż `.imgnote` (celowa duplikacja nagłówka/AES-GCM względem
+image_note_file.py — decyzja KISS); wspólny jest tylko KDF (vault_key.py).
+Ten sam 48-bajtowy prefiks (magic IMIX, version 2), jedna sekcja.
 
-Payload to CACHE POCHODNY, nie źródło prawdy — przy rozjeździe z payloadem
-`.imgnote` zawsze wygrywa notatka (Filar 2 w planie).
+Payload to CACHE POCHODNY, nie źródło prawdy — przy rozjeździe zawsze wygrywa notatka.
 
-  notes:     filename -> {"title", "folder_path", "mtime"}
-  tag_index: tag -> [filename, ...]        (indeks odwrócony)
+  notes:     filename -> {"title", "folder_path", "mtime", "tags"}   (zapisywane)
+  tag_index: tag -> set(filename)   (P3: tylko w pamięci, odtwarzany z notes przy wczytaniu)
 
-`filename` to sama nazwa pliku (np. "803c...ab.imgnote"), NIE pełna
-ścieżka — notatki żyją płasko w jednym katalogu, tym samym co plik
-indeksu, więc ścieżka bezwzględna byłaby zbędna i złamałaby przenośność
-(skopiowanie katalogu gdzie indziej przestałoby działać).
+`filename` to sama nazwa pliku (np. "803c...ab.imgnote"), nie pełna ścieżka.
 """
+import json
 import os
 import struct
-import json
 import uuid
+
 from cryptography.exceptions import InvalidTag
-from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from .errors import WrongPasswordError
+from .vault_key import INFO_INDEX, KDF_ARGON2ID, SALT_LEN, KdfParams, VaultKey
 
 TMP_SUFFIX = ".tmp"
+NONCE_LEN = 12
+TAG_LEN = 16
+SEC_PAYLOAD = 1
 
 
 def _atomic_write(path: str, chunks) -> None:
@@ -59,144 +58,99 @@ def _atomic_write(path: str, chunks) -> None:
 
 class IndexFile:
     MAGIC = b'IMIX'
-    VERSION = 1
-    HEADER_FORMAT = '<4sBBBBBI'
-    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    VERSION = 2
+    PREFIX_FORMAT = "<4sBBBBII16s16s"  # jak w image_note_file.py (48 B)
+    PREFIX_SIZE = struct.calcsize(PREFIX_FORMAT)
+    ENTRY_FORMAT = "<12sI"
+    ENTRY_SIZE = struct.calcsize(ENTRY_FORMAT)
     FILENAME = "_index.imgidx"  # stała nazwa - skanowanie *.imgnote ją pomija
 
-    def __init__(self, notes=None, tag_index=None):
-        self.notes = notes or {}
-        self.tag_index = tag_index or {}
+    def __init__(self, notes=None):
+        self.notes: dict[str, dict] = {}
+        self.tag_index: dict[str, set[str]] = {}
+        for filename, entry in (notes or {}).items():
+            self.set_note(filename, entry.get("title", ""), entry.get("folder_path", ""),
+                          entry.get("mtime", 0.0), entry.get("tags", []))
+        # vault_salt/parametry z nagłówka wczytanego pliku (None dla nowego indeksu)
+        self.vault_salt: bytes | None = None
+        self.params: KdfParams | None = None
 
     # ---- mutacje utrzymujące spójność notes <-> tag_index --------------
 
     def set_note(self, filename: str, title: str, folder_path: str, mtime: float, tags):
-        """Dodaje/aktualizuje wpis notatki i przepisuje jej pozycję w
-        tag_index. Najpierw usuwa stare wystąpienia (na wypadek, gdyby
-        notatka przy edycji straciła jakiś tag), potem dopisuje aktualne —
-        bez tego kroku stary tag zostałby w tag_index na zawsze."""
+        """Dodaje/aktualizuje wpis i jego pozycję w tag_index (usuwa stare tagi notatki)."""
         self.remove_note(filename)
-        self.notes[filename] = {"title": title, "folder_path": folder_path, "mtime": mtime}
+        tags = list(dict.fromkeys(tags or []))  # bez duplikatów, kolejność zachowana
+        self.notes[filename] = {"title": title, "folder_path": folder_path, "mtime": mtime, "tags": tags}
         for tag in tags:
-            self.tag_index.setdefault(tag, [])
-            if filename not in self.tag_index[tag]:
-                self.tag_index[tag].append(filename)
+            self.tag_index.setdefault(tag, set()).add(filename)
 
     def remove_note(self, filename: str):
-        """Usuwa notatkę z `notes` i ze wszystkich list w tag_index — w
-        tym pustych list po usunięciu (osierocony klucz taga bez żadnego
-        pliku to szum, nie informacja)."""
-        self.notes.pop(filename, None)
-        empty_tags = []
-        for tag, filenames in self.tag_index.items():
-            if filename in filenames:
-                filenames.remove(filename)
+        """P3: dotyka tylko tagów tej notatki (odwrotna mapa w notes[filename]["tags"]),
+        nie przegląda całego tag_index. Puste klucze tagów usuwane."""
+        entry = self.notes.pop(filename, None)
+        if not entry:
+            return
+        for tag in entry.get("tags", []):
+            filenames = self.tag_index.get(tag)
+            if filenames is None:
+                continue
+            filenames.discard(filename)
             if not filenames:
-                empty_tags.append(tag)
-        for tag in empty_tags:
-            del self.tag_index[tag]
+                del self.tag_index[tag]
 
-    # ---- derywacja klucza (identyczna jak w ImageNoteFile) -------------
+    # ---- zapis ------------------------------------------------------------
 
-    def _derive_key(self, password: str, salt: bytes) -> bytes:
-        kdf = Scrypt(salt=salt, length=32, n=2**14, r=8, p=1)
-        return kdf.derive(password.encode("utf-8"))
+    def save_to_file(self, path: str, key: VaultKey) -> None:
+        if not isinstance(key, VaultKey):
+            raise TypeError("save_to_file wymaga VaultKey (format v4 jest zawsze szyfrowany).")
+        payload = json.dumps({"notes": self.notes}).encode("utf-8")
+        file_salt = os.urandom(SALT_LEN)
+        p = key.params
+        prefix = struct.pack(self.PREFIX_FORMAT, self.MAGIC, self.VERSION, 0, KDF_ARGON2ID,
+                             p.lanes, p.memory_kib, p.iterations, key.vault_salt, file_salt)
+        fkey = key.file_key(file_salt, INFO_INDEX)
+        nonce = os.urandom(NONCE_LEN)
+        ct = AESGCM(fkey).encrypt(nonce, payload, prefix + bytes([SEC_PAYLOAD]))
+        _atomic_write(path, (prefix, struct.pack(self.ENTRY_FORMAT, nonce, len(ct)), ct))
+        self.vault_salt, self.params = key.vault_salt, key.params
 
-    # ---- (de)serializacja payloadu -------------------------------------
-
-    def _serialize_payload(self) -> bytes:
-        return json.dumps({
-            "notes": self.notes,
-            "tag_index": self.tag_index,
-        }).encode("utf-8")
-
-    @classmethod
-    def _deserialize_payload(cls, data: bytes):
-        j = json.loads(data.decode("utf-8"))
-        return j.get("notes", {}), j.get("tag_index", {})
-
-    # ---- zapis (kopia layoutu z ImageNoteFile) -------------------------
-
-    def save_to_file(self, path: str, password: str | None = None):
-        payload = self._serialize_payload()
-
-        if password:
-            salt = os.urandom(16)
-            iv = os.urandom(12)
-            key = self._derive_key(password, salt)
-            aes = AESGCM(key)
-            encrypted_with_tag = aes.encrypt(iv, payload, None)
-            ciphertext = encrypted_with_tag[:-16]
-            gcm_tag = encrypted_with_tag[-16:]
-
-            flags = 0x01
-            header = struct.pack(
-                self.HEADER_FORMAT,
-                self.MAGIC, self.VERSION, flags,
-                len(iv), len(salt), len(gcm_tag), len(ciphertext)
-            )
-            _atomic_write(path, (header, salt, iv, gcm_tag, ciphertext))
-        else:
-            flags = 0x00
-            header = struct.pack(
-                self.HEADER_FORMAT,
-                self.MAGIC, self.VERSION, flags, 0, 0, 0, len(payload)
-            )
-            _atomic_write(path, (header, payload))
-
-    # ---- odczyt ---------------------------------------------------------
+    # ---- odczyt -----------------------------------------------------------
 
     @classmethod
-    def load_from_file(cls, path: str, password: str | None = None):
+    def read_header(cls, path: str):
+        """(prefix, vault_salt, params, file_salt, nonce, length) z walidacją — bez klucza."""
         with open(path, "rb") as f:
-            header_data = f.read(cls.HEADER_SIZE)
-            if len(header_data) != cls.HEADER_SIZE:
-                raise ValueError("Plik uszkodzony: za krótki nagłówek.")
-            (magic, version, flags,
-             iv_len, salt_len, tag_len, enc_len) = struct.unpack(cls.HEADER_FORMAT, header_data)
-
-            if magic != cls.MAGIC:
+            prefix = f.read(cls.PREFIX_SIZE)
+            if len(prefix) < 5 or prefix[:4] != cls.MAGIC:
                 raise ValueError("Nieprawidłowy magic number (to nie jest plik indeksu).")
-            if version != cls.VERSION:
-                raise ValueError(
-                    f"Nieobsługiwana wersja indeksu: plik ma VERSION={version}, "
-                    f"ten moduł czyta tylko VERSION={cls.VERSION}."
-                )
+            if prefix[4] != cls.VERSION:
+                # stary indeks (v1) to tylko cache — wywołujący go odbuduje
+                raise ValueError(f"Nieobsługiwana wersja indeksu: v{prefix[4]}.")
+            if len(prefix) != cls.PREFIX_SIZE:
+                raise ValueError("Plik uszkodzony: za krótki nagłówek.")
+            _, _, _flags, kdf, lanes, mem, iters, vault_salt, file_salt = struct.unpack(cls.PREFIX_FORMAT, prefix)
+            if kdf != KDF_ARGON2ID:
+                raise ValueError(f"Nieobsługiwany KDF: {kdf}.")
+            params = KdfParams(memory_kib=mem, iterations=iters, lanes=lanes).validate()
+            entry = f.read(cls.ENTRY_SIZE)
+            if len(entry) != cls.ENTRY_SIZE:
+                raise ValueError("Plik uszkodzony: niepełna tablica sekcji.")
+            nonce, length = struct.unpack(cls.ENTRY_FORMAT, entry)
+            if length < TAG_LEN or os.fstat(f.fileno()).st_size != cls.PREFIX_SIZE + cls.ENTRY_SIZE + length:
+                raise ValueError("Plik uszkodzony: rozmiar nie zgadza się z nagłówkiem.")
+            ct = f.read(length)
+        return prefix, vault_salt, params, file_salt, nonce, ct
 
-            is_encrypted = bool(flags & 0x01)
-
-            if is_encrypted:
-                if (iv_len, salt_len, tag_len) != (12, 16, 16):
-                    raise ValueError("Plik uszkodzony: nieprawidłowe długości w nagłówku.")
-                salt = f.read(salt_len)
-                iv = f.read(iv_len)
-                gcm_tag = f.read(tag_len)
-                ciphertext = f.read(enc_len)
-
-                if len(ciphertext) != enc_len:
-                    raise ValueError(
-                        f"Plik uszkodzony: oczekiwano {enc_len} B danych, "
-                        f"odczytano {len(ciphertext)} B."
-                    )
-                if not password:
-                    raise ValueError("Ten indeks wymaga hasła.")
-
-                key = cls()._derive_key(password, salt)
-                aes = AESGCM(key)
-                try:
-                    decrypted = aes.decrypt(iv, ciphertext + gcm_tag, None)
-                except InvalidTag:
-                    raise WrongPasswordError(
-                        "Nieprawidłowe hasło — nie udało się zweryfikować indeksu."
-                    ) from None
-                notes, tag_index = cls._deserialize_payload(decrypted)
-                return cls(notes, tag_index)
-            else:
-                # ochrona przed podłożeniem jawnego indeksu do zaszyfrowanego vaulta
-                if password:
-                    raise ValueError("Indeks niezaszyfrowany w zaszyfrowanym vaultcie — odrzucony.")
-                payload = f.read(enc_len)
-                if len(payload) != enc_len:
-                    raise ValueError("Plik uszkodzony: niepełne dane.")
-                notes, tag_index = cls._deserialize_payload(payload)
-                return cls(notes, tag_index)
+    @classmethod
+    def load_from_file(cls, path: str, key: VaultKey) -> "IndexFile":
+        """key: VaultKey z dowolnym KeyRing — vault_salt/params brane z nagłówka indeksu."""
+        prefix, vault_salt, params, file_salt, nonce, ct = cls.read_header(path)
+        fkey = key.file_key(file_salt, INFO_INDEX, vault_salt, params)
+        try:
+            payload = AESGCM(fkey).decrypt(nonce, ct, prefix + bytes([SEC_PAYLOAD]))
+        except InvalidTag:
+            raise WrongPasswordError("Nieprawidłowe hasło albo uszkodzony indeks.") from None
+        index = cls(json.loads(payload.decode("utf-8")).get("notes", {}))
+        index.vault_salt, index.params = vault_salt, params
+        return index

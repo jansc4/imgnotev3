@@ -817,7 +817,8 @@ async function loadOneThumbnail(card, gen) {
     const b64 = await callApi("get_note_thumbnail", filepath);
     if (!b64 || gen !== _thumbGeneration || !card.isConnected || card.dataset.filepath !== filepath) return;
     const imgEl = card.querySelector(".thumb-img");
-    if (imgEl) imgEl.innerHTML = `<img src="data:image/png;base64,${b64}" alt="">`;
+    // format v4: miniatury zawsze WebP (sekcja miniatury pliku .imgnote)
+    if (imgEl) imgEl.innerHTML = `<img src="data:image/webp;base64,${b64}" alt="">`;
   } catch (e) {
     // pojedynczy błąd nie przerywa ładowania reszty
   }

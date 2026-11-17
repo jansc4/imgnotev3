@@ -17,6 +17,8 @@ from backendV4.api import Api  # noqa: E402
 from backendV4.image_note_file import ImageNoteFile  # noqa: E402
 
 PW = "haslo-e2e"
+from _v4 import new_key  # noqa: E402  (format v4, szybkie parametry Argon2id)
+KEY = new_key(PW)
 root = tempfile.mkdtemp(prefix="imgnote_e2e_")
 paths = []
 for i in range(12):
@@ -24,7 +26,7 @@ for i in range(12):
     Image.new("RGB", (800, 600), (i * 20, 100, 200 - i * 10)).save(buf, format="PNG")
     p = os.path.join(root, ImageNoteFile.new_filename())
     ImageNoteFile(f"# Nagłówek {i}\n\n| a | b |\n|-|-|\n| 1 | 2 |", buf.getvalue(), [f"t{i % 3}"],
-                  f"Notatka {i:02d}", "").save_to_file(p, PW)
+                  f"Notatka {i:02d}", "").save_to_file(p, KEY)
     paths.append(p)
 
 api = Api()

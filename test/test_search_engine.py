@@ -24,6 +24,11 @@ from backendV4.search_engine import SearchEngine, match_text
 
 PASSWORD = "haslo123"
 
+from _v4 import new_key  # noqa: E402  (szybkie parametry Argon2id w testach)
+KEY = new_key(PASSWORD)
+from backendV4.vault_key import KeyRing, VaultKey  # noqa: E402
+WRONG = VaultKey(KeyRing("zle_haslo"), KEY.vault_salt, KEY.params)  # złe hasło, ten sam vault
+
 
 def _never_call(path):
     raise AssertionError(f"note_loader nie powinien być wołany dla: {path}")
@@ -101,12 +106,12 @@ def test_partial_case_insensitive_tag_match():
 def _make_note(root: Path, title: str, text: str, tags=None) -> Path:
     note = ImageNoteFile(text=text, title=title, folder_path="", tags=tags or [])
     path = root / ImageNoteFile.new_filename()
-    note.save_to_file(str(path), password=PASSWORD)
+    note.save_to_file(str(path), KEY)
     return path
 
 
 def _real_loader(path: str) -> str:
-    return ImageNoteFile.load_from_file(path, password=PASSWORD).text
+    return ImageNoteFile.load_from_file(path, KEY).text
 
 
 def test_text_only_query_decrypts_all_candidates():
@@ -206,7 +211,7 @@ def test_note_loader_wired_through_note_cache_reuses_cache():
         cache = NoteCache()
         # symulacja: ta notatka była już otwarta wcześniej w sesji (albo
         # dostała darmową hydratację z IndexManager podczas reperacji)
-        cache.get_full(str(path_cached), PASSWORD, os.path.getmtime(path_cached))
+        cache.get_full(str(path_cached), KEY, os.path.getmtime(path_cached))
 
         idx = _build_index([
             (path_cached.name, "Cached", "", []),
@@ -214,7 +219,7 @@ def test_note_loader_wired_through_note_cache_reuses_cache():
         ])
 
         def loader(p):
-            return cache.get_full(p, "zle_haslo", os.path.getmtime(p)).text
+            return cache.get_full(p, WRONG, os.path.getmtime(p)).text
 
         engine = SearchEngine(idx, str(root), note_loader=loader)
         results = engine.search(text_query="hello")

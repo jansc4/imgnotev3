@@ -40,20 +40,42 @@ def test_shrinks_large_noisy_png():
     thumb = generate_thumbnail(data)
     assert thumb is not None
     img = Image.open(io.BytesIO(thumb))
-    assert img.format == "PNG"
+    assert img.format == "WEBP"  # format v4: miniatura zawsze WebP
     assert max(img.size) <= MAX_DIMENSION
     assert len(thumb) < len(data)
     print("OK  test_shrinks_large_noisy_png")
 
 
-def test_shrinks_large_jpeg_keeps_format():
+def test_shrinks_large_jpeg_to_webp():
     data = _solid(2000, 1500, fmt="JPEG")
     thumb = generate_thumbnail(data)
     assert thumb is not None
     img = Image.open(io.BytesIO(thumb))
-    assert img.format == "JPEG"
-    assert max(img.size) <= MAX_DIMENSION
-    print("OK  test_shrinks_large_jpeg_keeps_format")
+    assert img.format == "WEBP" and img.mode == "RGB"
+    assert max(img.size) == MAX_DIMENSION  # draft() nie może zejść poniżej docelowego rozmiaru
+    print("OK  test_shrinks_large_jpeg_to_webp")
+
+
+def test_exif_orientation_applied():
+    img = Image.new("RGB", (600, 300), (1, 2, 3))
+    exif = Image.Exif()
+    exif[0x0112] = 6  # Orientation: obrót o 90° (typowe zdjęcie pionowe z telefonu)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", exif=exif)
+    thumb = Image.open(io.BytesIO(generate_thumbnail(buf.getvalue())))
+    assert thumb.size[1] > thumb.size[0], thumb.size
+    print("OK  test_exif_orientation_applied")
+
+
+def test_decompression_bomb_returns_none():
+    import backendV4.thumbnail as t
+    old = t.MAX_PIXELS
+    t.MAX_PIXELS = 100 * 100
+    try:
+        assert generate_thumbnail(_solid(200, 200)) is None
+    finally:
+        t.MAX_PIXELS = old
+    print("OK  test_decompression_bomb_returns_none")
 
 
 def test_does_not_upscale_small_image():
@@ -93,7 +115,9 @@ def test_garbage_bytes_returns_none():
 
 def main():
     test_shrinks_large_noisy_png()
-    test_shrinks_large_jpeg_keeps_format()
+    test_shrinks_large_jpeg_to_webp()
+    test_exif_orientation_applied()
+    test_decompression_bomb_returns_none()
     test_does_not_upscale_small_image()
     test_preserves_aspect_ratio()
     test_preserves_transparency_in_png()

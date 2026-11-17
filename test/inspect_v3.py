@@ -14,7 +14,11 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from backendV4.image_note_file import ImageNoteFile
+from types import SimpleNamespace
+
+# backendV4 czyta już tylko v4 — czytnik v3 żyje w skrypcie migracji
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from migrate_v3_to_v4 import read_v3_note  # noqa: E402
 
 
 def detect_image_ext(data: bytes) -> str:
@@ -63,7 +67,9 @@ def main():
 
     for path in files:
         try:
-            note = ImageNoteFile.load_from_file(str(path), password=args.password)
+            d = read_v3_note(path, args.password or "")
+            note = SimpleNamespace(title=d["title"], folder_path=d["folder_path"], tags=d["tags"],
+                                   text=d["text"], image_data=d["image"], encrypted=True)
         except Exception as e:
             print(f"BŁĄD  {path.name}: {e}")
             print("-" * 70)

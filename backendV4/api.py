@@ -42,6 +42,7 @@ from .index_manager import IndexManager
 from .folder_manager import FolderManager
 from .note_cache import CachedNote, NoteCache
 from .search_engine import SearchEngine
+from .vault_key import KeyRing, VaultKey
 
 
 def _mutating(fn):
@@ -109,6 +110,7 @@ class _ClipboardBridge(QObject):
 class Api:
     def __init__(self):
         self._password: str = ""
+        self._keyring: KeyRing | None = None  # format v4: klucze główne sesji
         self._root_folders: list[str] = []
         self._window = None  # ustawiane z main.py po create_window()
         # Api() jest tworzone w main() na wątku głównym (przed webview.start()),
@@ -161,7 +163,7 @@ class Api:
 
     def _setup_root(self, folder: str) -> None:
         mgr = IndexManager(
-            folder, password=self._password or None, note_cache=self._note_cache,
+            folder, keyring=self._session_keyring(), note_cache=self._note_cache,
             on_progress=self._push_progress,
         )
         mgr.load_or_rebuild()
@@ -178,6 +180,19 @@ class Api:
     def _index_manager_for_filepath(self, filepath: str) -> IndexManager | None:
         # pliki leżą płasko w root_folder, więc katalog nadrzędny = klucz wprost
         return self._index_managers.get(os.path.dirname(filepath))
+
+    def _session_keyring(self) -> KeyRing:
+        """Jeden KeyRing na sesję: Argon2id liczony raz na vault_salt (format v4)."""
+        if self._keyring is None:
+            self._keyring = KeyRing(self._password)
+        return self._keyring
+
+    def _key_for(self, filepath: str) -> VaultKey:
+        """Klucz vaulta, do którego należy plik (root_folder = katalog pliku)."""
+        mgr = self._index_manager_for_filepath(filepath)
+        if mgr is None or mgr.key is None:
+            raise ValueError(f"Nieznany plik: {filepath}")
+        return mgr.key
 
     # ---- S2: walidacja ścieżek przychodzących z JS ----------------------
 
@@ -211,16 +226,16 @@ class Api:
         rdzeń rename_tag/merge_tag/delete_tag — trzy operacje, jeden helper."""
         path = os.path.join(mgr.root_folder, filename)
         mtime = os.path.getmtime(path)
-        cached = self._note_cache.get_full(path, self._password or None, mtime)
+        cached = self._note_cache.get_content(path, mgr.key, mtime)
         old_tags = list(cached.tags)
         new_tags = transform(old_tags)
         if new_tags == old_tags:
             return False
-        note = ImageNoteFile(
-            text=cached.text, image_data=cached.image_data, tags=new_tags,
-            title=cached.title, folder_path=cached.folder_path,
+        # v4: tylko nowa sekcja meta, zaszyfrowany obraz kopiowany bez odszyfrowania
+        note = ImageNoteFile.rewrite_meta(
+            path, mgr.key, title=cached.title, folder_path=cached.folder_path,
+            tags=new_tags, text=cached.text,
         )
-        note.save_to_file(path, password=self._password or None)
         mgr.note_saved(path, note)
         return True
 
@@ -250,10 +265,12 @@ class Api:
             raise ValueError("Nie wybrano folderu.")
         if not password:
             raise ValueError("Hasło nie może być puste.")
+        if password != self._password:
+            self._keyring = None  # inne hasło = nowy KeyRing (stare klucze główne nieaktualne)
         self._password = password
 
         mgr = IndexManager(
-            root_folder, password=self._password or None, note_cache=self._note_cache,
+            root_folder, keyring=self._session_keyring(), note_cache=self._note_cache,
             on_progress=self._push_progress,
         )
         mgr.load_or_rebuild()
@@ -291,6 +308,9 @@ class Api:
         """S7: blokada sesji — porzuca hasło, odszyfrowany cache i managery
         (indeksy w pamięci). Python nie pozwala nadpisać str w miejscu, więc to
         zwolnienie referencji, nie wymazanie RAM; dalsze wywołania wymagają login()."""
+        if self._keyring is not None:
+            self._keyring.wipe()
+        self._keyring = None
         self._password = ""
         self._note_cache = NoteCache()
         self._index_managers = {}
@@ -412,12 +432,11 @@ class Api:
 
             path = os.path.join(mgr.root_folder, filename)
             mtime = os.path.getmtime(path)
-            cached = self._note_cache.get_full(path, self._password or None, mtime)
-            note = ImageNoteFile(
-                text=cached.text, image_data=cached.image_data, tags=cached.tags,
-                title=cached.title, folder_path=updated_folder_path,
+            cached = self._note_cache.get_content(path, mgr.key, mtime)
+            note = ImageNoteFile.rewrite_meta(
+                path, mgr.key, title=cached.title, folder_path=updated_folder_path,
+                tags=cached.tags, text=cached.text,
             )
-            note.save_to_file(path, password=self._password or None)
             mgr.note_saved(path, note)
             self._push_progress(i, total)
 
@@ -471,14 +490,13 @@ class Api:
         if not mgr:
             raise ValueError(f"Nieznany plik: {filepath}")
         mtime = os.path.getmtime(filepath)
-        cached = self._note_cache.get_full(filepath, self._password or None, mtime)
+        cached = self._note_cache.get_content(filepath, mgr.key, mtime)
         if cached.folder_path == new_folder_path:
             return
-        note = ImageNoteFile(
-            text=cached.text, image_data=cached.image_data, tags=cached.tags,
-            title=cached.title, folder_path=new_folder_path,
+        note = ImageNoteFile.rewrite_meta(
+            filepath, mgr.key, title=cached.title, folder_path=new_folder_path,
+            tags=cached.tags, text=cached.text,
         )
-        note.save_to_file(filepath, password=self._password or None)
         mgr.note_saved(filepath, note)
         fm.note_saved(new_folder_path)
         mgr.save()
@@ -568,7 +586,7 @@ class Api:
     def get_note(self, filepath: str) -> dict:
         self._require_note_path(filepath)
         mtime = os.path.getmtime(filepath)
-        note = self._note_cache.get_full(filepath, self._password or None, mtime)
+        note = self._note_cache.get_full(filepath, self._key_for(filepath), mtime)
         # display_path do UI (np. Viewer musi wiedzieć, do jakiego folderu
         # zapisać przy edycji inline — nie da się tego odtworzyć z samego
         # filepath, bo w v4 wszystkie pliki leżą płasko w root_folder).
@@ -595,12 +613,11 @@ class Api:
         if not mgr:
             raise ValueError(f"Nieznany plik: {filepath}")
         mtime = os.path.getmtime(filepath)
-        cached = self._note_cache.get_full(filepath, self._password or None, mtime)
-        note = ImageNoteFile(
-            text=text, image_data=cached.image_data, tags=list(cached.tags),
-            title=cached.title, folder_path=cached.folder_path,
+        cached = self._note_cache.get_content(filepath, mgr.key, mtime)
+        note = ImageNoteFile.rewrite_meta(  # v4: tekst jest w sekcji meta, obraz nietknięty
+            filepath, mgr.key, title=cached.title, folder_path=cached.folder_path,
+            tags=list(cached.tags), text=text,
         )
-        note.save_to_file(filepath, password=self._password or None)
         mgr.note_saved(filepath, note)
         mgr.save()
         return {"html": self.render_markdown(text)}
@@ -614,7 +631,7 @@ class Api:
         try:
             self._require_note_path(filepath)
             mtime = os.path.getmtime(filepath)
-            thumb = self._note_cache.get_thumbnail(filepath, self._password or None, mtime)
+            thumb = self._note_cache.get_thumbnail(filepath, self._key_for(filepath), mtime)
         except Exception:
             return ""
         return base64.b64encode(thumb).decode() if thumb else ""
@@ -650,27 +667,32 @@ class Api:
         folder_path = fm.to_folder_path(folder)
         if original_filepath:
             self._require_note_path(original_filepath)
-
-        if image_base64 is None and original_filepath and os.path.exists(original_filepath):
-            mtime = os.path.getmtime(original_filepath)
-            image_data = self._note_cache.get_full(original_filepath, self._password or None, mtime).image_data
-        else:
-            image_data = base64.b64decode(image_base64) if image_base64 else b""
         safe_title = (title or "").strip() or "notatka"
-        note = ImageNoteFile(
-            text=text, image_data=image_data, tags=list(tags),
-            title=safe_title, folder_path=folder_path,
-        )
 
-        if original_filepath and os.path.exists(original_filepath):
+        existing = bool(original_filepath) and os.path.exists(original_filepath)
+        if existing:
             target = original_filepath
+            target_mgr = self._index_manager_for_filepath(target) or mgr
         else:
             target = os.path.join(mgr.root_folder, ImageNoteFile.new_filename())
+            target_mgr = mgr
 
-        note.save_to_file(target, password=self._password or None)
-        mgr.note_saved(target, note)
+        if image_base64 is None and existing:
+            # obraz bez zmian: v4 przepisuje tylko sekcję meta, obraz zostaje zaszyfrowany jak był
+            note = ImageNoteFile.rewrite_meta(
+                target, target_mgr.key, title=safe_title, folder_path=folder_path,
+                tags=list(tags), text=text,
+            )
+        else:
+            image_data = base64.b64decode(image_base64) if image_base64 else b""
+            note = ImageNoteFile(
+                text=text, image_data=image_data, tags=list(tags),
+                title=safe_title, folder_path=folder_path,
+            )
+            note.save_to_file(target, target_mgr.key)
+        target_mgr.note_saved(target, note)
         fm.note_saved(folder_path)
-        mgr.save()  # indeks na dysku zawsze aktualny, nie tylko "po następnym logowaniu"
+        target_mgr.save()  # indeks na dysku zawsze aktualny, nie tylko "po następnym logowaniu"
         self._push_known_tags()
 
         return target
@@ -731,7 +753,7 @@ class Api:
         total = len(filepaths)
         for i, filepath in enumerate(filepaths, start=1):
             mtime = os.path.getmtime(filepath)
-            note = self._note_cache.get_full(filepath, self._password or None, mtime)
+            note = self._note_cache.get_full(filepath, self._key_for(filepath), mtime)
 
             # S8: każdy segment przez _sanitize_filename (folder_path jest już bez "."/"..")
             segments = [self._sanitize_filename(s) for s in note.folder_path.split("/") if s]
@@ -864,8 +886,8 @@ class Api:
             fm = self._folder_managers[root]
             engine = SearchEngine(
                 mgr.index, root,
-                note_loader=lambda p: self._note_cache.get_content(
-                    p, self._password or None, os.path.getmtime(p)
+                note_loader=lambda p, k=mgr.key: self._note_cache.get_content(
+                    p, k, os.path.getmtime(p)  # v4: tylko sekcja meta
                 ).text,
             )
             for r in engine.search(tag_query, text_query):

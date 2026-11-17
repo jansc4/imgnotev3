@@ -16,11 +16,16 @@ from backendV4.note_cache import NoteCache
 
 PASSWORD = "haslo123"
 
+from _v4 import new_key  # noqa: E402  (szybkie parametry Argon2id w testach)
+KEY = new_key(PASSWORD)
+from backendV4.vault_key import KeyRing, VaultKey  # noqa: E402
+WRONG = VaultKey(KeyRing("zle_haslo"), KEY.vault_salt, KEY.params)  # złe hasło, ten sam vault
+
 
 def _make_note(root: Path, title: str, tags=None, image_data: bytes = b"") -> Path:
     note = ImageNoteFile(text=f"tresc {title}", title=title, folder_path="", tags=tags or [], image_data=image_data)
     path = root / ImageNoteFile.new_filename()
-    note.save_to_file(str(path), password=PASSWORD)
+    note.save_to_file(str(path), KEY)
     return path
 
 
@@ -50,7 +55,7 @@ def test_get_full_hydrates_and_caches():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        result = cache.get_full(str(path), PASSWORD, mtime)
+        result = cache.get_full(str(path), KEY, mtime)
         assert result.is_fully_hydrated is True
         assert result.text == "tresc Pełna"
         assert result.tags == ["x"]
@@ -68,8 +73,8 @@ def test_get_full_second_call_uses_cache_not_disk():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        cache.get_full(str(path), PASSWORD, mtime)              # poprawne hasło, hydratacja
-        result = cache.get_full(str(path), "zle_haslo", mtime)  # to samo mtime -> z cache
+        cache.get_full(str(path), KEY, mtime)              # poprawne hasło, hydratacja
+        result = cache.get_full(str(path), WRONG, mtime)  # to samo mtime -> z cache
         assert result.text == "tresc X"
     print("OK  test_get_full_second_call_uses_cache_not_disk")
 
@@ -81,14 +86,14 @@ def test_get_full_refetches_after_mtime_change():
         old_mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        cache.get_full(str(path), PASSWORD, old_mtime)
+        cache.get_full(str(path), KEY, old_mtime)
 
         edited = ImageNoteFile(text="nowa tresc", title="Nowa", folder_path="", tags=[])
-        edited.save_to_file(str(path), password=PASSWORD)
+        edited.save_to_file(str(path), KEY)
         os.utime(path, (old_mtime + 10, old_mtime + 10))
         new_mtime = os.path.getmtime(path)
 
-        result = cache.get_full(str(path), PASSWORD, new_mtime)
+        result = cache.get_full(str(path), KEY, new_mtime)
         assert result.text == "nowa tresc"
         assert result.title == "Nowa"
     print("OK  test_get_full_refetches_after_mtime_change")
@@ -103,7 +108,7 @@ def test_get_metadata_preserves_hydration_when_mtime_matches():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        cache.get_full(str(path), PASSWORD, mtime)
+        cache.get_full(str(path), KEY, mtime)
         result = cache.get_metadata(str(path), "A", "", mtime)
         assert result.is_fully_hydrated is True
         assert result.text == "tresc A"
@@ -117,7 +122,7 @@ def test_get_metadata_drops_hydration_on_mtime_mismatch():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        cache.get_full(str(path), PASSWORD, mtime)
+        cache.get_full(str(path), KEY, mtime)
         result = cache.get_metadata(str(path), "A", "", mtime=mtime + 999)
         assert result.is_fully_hydrated is False
     print("OK  test_get_metadata_drops_hydration_on_mtime_mismatch")
@@ -130,13 +135,13 @@ def test_invalidate_forces_refetch():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        cache.get_full(str(path), PASSWORD, mtime)
+        cache.get_full(str(path), KEY, mtime)
         cache.invalidate(str(path))
 
         # po inwalidacji złe hasło MUSI się wywalić - to dowód, że wpisu
         # faktycznie nie ma już w cache i get_full realnie sięgnie do dysku
         try:
-            cache.get_full(str(path), "zle_haslo", mtime)
+            cache.get_full(str(path), WRONG, mtime)
         except Exception:
             pass
         else:
@@ -155,11 +160,11 @@ def test_lru_eviction_drops_least_recently_used():
         path_c = _make_note(root, "C")
 
         cache = NoteCache(maxsize=2)
-        cache.get_full(str(path_a), PASSWORD, os.path.getmtime(path_a))
-        cache.get_full(str(path_b), PASSWORD, os.path.getmtime(path_b))
+        cache.get_full(str(path_a), KEY, os.path.getmtime(path_a))
+        cache.get_full(str(path_b), KEY, os.path.getmtime(path_b))
         assert len(cache) == 2
 
-        cache.get_full(str(path_c), PASSWORD, os.path.getmtime(path_c))  # A powinno wypaść
+        cache.get_full(str(path_c), KEY, os.path.getmtime(path_c))  # A powinno wypaść
         assert len(cache) == 2
         assert str(path_a) not in cache._cache
         assert str(path_b) in cache._cache
@@ -180,9 +185,9 @@ def test_put_full_hydrates_without_any_decryption():
     print("OK  test_put_full_hydrates_without_any_decryption")
 
 
-def test_get_thumbnail_lazy_for_real_image():
-    """P1: get_full nie generuje miniatury, robi to dopiero get_thumbnail
-    (raz — drugie wywołanie ze złym hasłem idzie z cache)."""
+def test_get_thumbnail_reads_only_thumb_section():
+    """v4: miniatura z własnej sekcji pliku — bez obrazu i bez meta w cache;
+    drugie wywołanie (złe hasło) idzie z cache miniatur."""
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         png = _png_bytes(400, 300)
@@ -190,12 +195,11 @@ def test_get_thumbnail_lazy_for_real_image():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        full = cache.get_full(str(path), PASSWORD, mtime)
-        assert full.thumbnail_data is None and full.image_data == png
-        thumb = cache.get_thumbnail(str(path), PASSWORD, mtime)
-        assert thumb is not None and len(thumb) < len(png)
-        assert cache.get_thumbnail(str(path), "zle_haslo", mtime) == thumb
-    print("OK  test_get_thumbnail_lazy_for_real_image")
+        thumb = cache.get_thumbnail(str(path), KEY, mtime)
+        assert thumb is not None and thumb[8:12] == b"WEBP" and len(thumb) < len(png)
+        assert len(cache._images) == 0 and len(cache._cache) == 0  # obraz ani meta nie dotknięte
+        assert cache.get_thumbnail(str(path), WRONG, mtime) == thumb
+    print("OK  test_get_thumbnail_reads_only_thumb_section")
 
 
 def test_thumbnail_none_when_note_has_no_image():
@@ -205,25 +209,28 @@ def test_thumbnail_none_when_note_has_no_image():
         mtime = os.path.getmtime(path)
 
         cache = NoteCache()
-        assert cache.get_thumbnail(str(path), PASSWORD, mtime) is None
+        assert cache.get_thumbnail(str(path), KEY, mtime) is None
         # notatka bez obrazu nie wymusza ponownego deszyfrowania w get_full
-        assert cache.get_full(str(path), "zle_haslo", mtime).image_data == b""
+        assert cache.get_full(str(path), KEY, mtime).image_data == b""
+        assert cache.get_full(str(path), WRONG, mtime).image_data == b""
     print("OK  test_thumbnail_none_when_note_has_no_image")
 
 
-def test_put_full_with_thumbnail_keeps_no_image():
-    """Reperacja (keep_image=False, with_thumbnail=True): miniatura gotowa,
-    pełny obraz nie zajmuje budżetu — get_full odszyfruje go od nowa."""
-    png = _png_bytes(500, 500)
-    note = ImageNoteFile(text="", title="X", folder_path="", tags=[], image_data=png)
-    cache = NoteCache()
-    result = cache.put_full("nigdy_nie_zapisany.imgnote", mtime=1.0, note=note,
-                            keep_image=False, with_thumbnail=True)
-    assert result.thumbnail_data is not None
-    assert len(result.thumbnail_data) < len(png)
-    assert len(cache._images) == 0
-    assert cache.get_thumbnail("nigdy_nie_zapisany.imgnote", None, 1.0) == result.thumbnail_data
-    print("OK  test_put_full_with_thumbnail_keeps_no_image")
+def test_put_meta_keeps_no_image():
+    """Reperacja (put_meta z load_meta): tekst w cache, obraz nie zajmuje budżetu,
+    has_image z rozmiaru w nagłówku; get_full odszyfruje obraz dopiero na żądanie."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        png = _png_bytes(200, 200)
+        path = _make_note(root, "M", image_data=png)
+        mtime = os.path.getmtime(path)
+        meta = ImageNoteFile.load_meta(str(path), KEY)
+        cache = NoteCache()
+        entry = cache.put_meta(str(path), mtime, meta)
+        assert entry.text == "tresc M" and entry.has_image and len(cache._images) == 0
+        assert cache.get_content(str(path), WRONG, mtime).text == "tresc M"  # z cache
+        assert cache.get_full(str(path), KEY, mtime).image_data == png
+    print("OK  test_put_meta_keeps_no_image")
 
 
 def test_image_budget_evicts_images_keeps_text():
@@ -235,11 +242,11 @@ def test_image_budget_evicts_images_keeps_text():
         path_a = _make_note(root, "A", image_data=img)
         path_b = _make_note(root, "B", image_data=img)
         cache = NoteCache(image_budget=1000)
-        cache.get_full(str(path_a), PASSWORD, os.path.getmtime(path_a))
-        cache.get_full(str(path_b), PASSWORD, os.path.getmtime(path_b))
+        cache.get_full(str(path_a), KEY, os.path.getmtime(path_a))
+        cache.get_full(str(path_b), KEY, os.path.getmtime(path_b))
         assert str(path_a) not in cache._images and str(path_b) in cache._images
-        assert cache.get_content(str(path_a), "zle_haslo", os.path.getmtime(path_a)).text == "tresc A"
-        assert cache.get_full(str(path_a), PASSWORD, os.path.getmtime(path_a)).image_data == img
+        assert cache.get_content(str(path_a), WRONG, os.path.getmtime(path_a)).text == "tresc A"
+        assert cache.get_full(str(path_a), KEY, os.path.getmtime(path_a)).image_data == img
     print("OK  test_image_budget_evicts_images_keeps_text")
 
 
@@ -253,9 +260,9 @@ def main():
     test_invalidate_forces_refetch()
     test_lru_eviction_drops_least_recently_used()
     test_put_full_hydrates_without_any_decryption()
-    test_get_thumbnail_lazy_for_real_image()
+    test_get_thumbnail_reads_only_thumb_section()
     test_thumbnail_none_when_note_has_no_image()
-    test_put_full_with_thumbnail_keeps_no_image()
+    test_put_meta_keeps_no_image()
     test_image_budget_evicts_images_keeps_text()
     print("\nWszystkie testy przeszły.")
 

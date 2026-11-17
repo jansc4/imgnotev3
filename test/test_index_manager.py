@@ -21,11 +21,16 @@ from backendV4.errors import WrongPasswordError
 
 PASSWORD = "haslo123"
 
+from _v4 import new_key  # noqa: E402  (szybkie parametry Argon2id w testach)
+KEY = new_key(PASSWORD)
+from backendV4.vault_key import KeyRing, VaultKey  # noqa: E402
+WRONG = VaultKey(KeyRing("zle_haslo"), KEY.vault_salt, KEY.params)  # złe hasło, ten sam vault
+
 
 def _make_note(root: Path, title: str, folder_path: str, tags=None) -> Path:
     note = ImageNoteFile(text="", title=title, folder_path=folder_path, tags=tags or [])
     path = root / ImageNoteFile.new_filename()
-    note.save_to_file(str(path), password=PASSWORD)
+    note.save_to_file(str(path), KEY)
     return path
 
 
@@ -101,7 +106,7 @@ def test_detects_modified_file():
         old_mtime = os.path.getmtime(path)
 
         edited = ImageNoteFile(text="", title="Nowy tytuł", folder_path="", tags=["nowy"])
-        edited.save_to_file(str(path), password=PASSWORD)
+        edited.save_to_file(str(path), KEY)
         # gwarancja różnicy mtime niezależnie od rozdzielczości zegara fs
         os.utime(path, (old_mtime + 10, old_mtime + 10))
 
@@ -123,12 +128,12 @@ def test_note_saved_and_deleted_convenience():
 
         note = ImageNoteFile(text="x", title="Ręcznie", folder_path="", tags=["r"])
         path = root / ImageNoteFile.new_filename()
-        note.save_to_file(str(path), password=PASSWORD)
+        note.save_to_file(str(path), KEY)
         mgr.note_saved(str(path), note)
 
         filename = os.path.basename(path)
         assert filename in mgr.index.notes
-        assert mgr.index.tag_index == {"r": [filename]}
+        assert mgr.index.tag_index == {"r": {filename}}  # P3: zbiory
 
         mgr.note_deleted(str(path))
         assert filename not in mgr.index.notes
@@ -261,7 +266,7 @@ def test_load_or_rebuild_populates_note_cache_for_free():
         mgr.load_or_rebuild()
 
         mtime = os.path.getmtime(path)
-        result = cache.get_full(str(path), "zle_haslo", mtime)  # nie powinno się wywalić
+        result = cache.get_full(str(path), WRONG, mtime)  # nie powinno się wywalić
         assert result.text == ""
         assert result.tags == ["x"]
     print("OK  test_load_or_rebuild_populates_note_cache_for_free")
@@ -287,7 +292,7 @@ def test_load_or_rebuild_does_not_prepopulate_unchanged_files():
 
         mtime = os.path.getmtime(path)
         try:
-            cache2.get_full(str(path), "zle_haslo", mtime)
+            cache2.get_full(str(path), WRONG, mtime)
         except WrongPasswordError:
             pass
         else:
@@ -304,11 +309,11 @@ def test_note_saved_populates_note_cache():
 
         note = ImageNoteFile(text="świeżo", title="Nowa", folder_path="", tags=["n"])
         path = root / ImageNoteFile.new_filename()
-        note.save_to_file(str(path), password=PASSWORD)
+        note.save_to_file(str(path), KEY)
         mgr.note_saved(str(path), note)
 
         mtime = os.path.getmtime(path)
-        result = cache.get_full(str(path), "zle_haslo", mtime)  # z cache, nie z dysku
+        result = cache.get_full(str(path), WRONG, mtime)  # z cache, nie z dysku
         assert result.text == "świeżo"
     print("OK  test_note_saved_populates_note_cache")
 
@@ -322,7 +327,7 @@ def test_note_deleted_invalidates_note_cache():
 
         note = ImageNoteFile(text="do usunięcia", title="X", folder_path="", tags=[])
         path = root / ImageNoteFile.new_filename()
-        note.save_to_file(str(path), password=PASSWORD)
+        note.save_to_file(str(path), KEY)
         mgr.note_saved(str(path), note)
 
         mgr.note_deleted(str(path))

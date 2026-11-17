@@ -12,6 +12,12 @@ współdzielona implementacja — to inny rodzaj sprzężenia niż to, którego
 """
 
 
+class LegacyFormatError(ValueError):
+    """Plik w starszym formacie (v3) — wymaga test/migrate_v3_to_v4.py. Osobny typ,
+    żeby IndexManager przerwał logowanie czytelnym błędem zamiast pominąć plik."""
+    pass
+
+
 class WrongPasswordError(ValueError):
     """Hasło nie pasuje do pliku — AES-GCM nie zweryfikował taga
     integralności. Odróżnione od innych ValueError (zły magic number,
