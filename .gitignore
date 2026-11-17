@@ -12,7 +12,14 @@ wheels/
 # Local planning doc, not for the public repo
 MIGRATION_PLAN.md
 V4_REDESIGN_PLAN.md
+IMGNOTE_AUDYT_I_PLAN.md
 .git_commit_msg_tmp.txt
+
+# dane vaulta — nigdy do repo (także testowy vault odpalony w katalogu projektu)
+*.imgnote
+*.imgidx
+# pliki tymczasowe zapisu atomowego (.<32hex>.tmp)
+.*.tmp
 
 # zrzuty pamięci (mogą zawierać hasło i odszyfrowane dane)
 /core
