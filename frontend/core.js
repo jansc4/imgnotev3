@@ -38,6 +38,14 @@ async function callApi(method, ...args) {
 const Views = {};   // nazwa widoku -> funkcja render(container)
 let _currentView = null;
 
+// G7: jedna wersja escapowania dla całego frontu (String() — nie rzuca dla liczb/null)
+function escapeHtml(s) {
+  return String(s ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+const escapeAttr = escapeHtml;
+
 function registerView(name, renderFn) {
   Views[name] = renderFn;
 }

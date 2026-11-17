@@ -252,6 +252,10 @@ body {
   flex-direction: column;
   align-items: center;
   gap: 4px;
+  /* G3: przeglądarka pomija layout/malowanie kart poza ekranem (duży Home);
+     wysokość zastępcza = miniatura + padding + tytuł */
+  content-visibility: auto;
+  contain-intrinsic-block-size: calc(var(--thumb-size) + 30px);
 }
 .thumb-card:hover { border-color: var(--accent); background: var(--accent-hover); }
 /* Zaznaczenie do eksportu wielu notatek (runda "eksport", 2026-09-24) —

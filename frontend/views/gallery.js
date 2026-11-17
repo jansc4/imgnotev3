@@ -427,13 +427,6 @@ function renderBreadcrumb() {
   });
 }
 
-function escapeHtml(s) {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-function escapeAttr(s) {
-  return escapeHtml(s).replace(/"/g, "&quot;");
-}
-
 // ── Siatka notatek ─────────────────────────────────────────────────
 
 async function selectFolder(folder) {
@@ -662,6 +655,7 @@ function folderOf(note) {
 }
 
 function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
+  _thumbGeneration++; // G1: miniatury z poprzedniego renderu są już nieaktualne
   const el = document.getElementById("notes-grid");
   if (!el) return;
   subfolders = subfolders || [];
@@ -757,16 +751,23 @@ function renderNotesGrid(notes, searchMode, groupByFolder, subfolders) {
   // w obszarze siatki, przez IntersectionObserver — zamiast ładować
   // wszystkie naraz sekwencyjnie (istotne przy Home z dużą liczbą notatek).
   // Kafelki podfolderów pomijamy — nie mają miniatury do wczytania.
-  setupLazyThumbnails(notes);
+  setupLazyThumbnails();
 }
 
 let _thumbObserver = null;
+// G1: każde żądanie miniatury to osobny wątek + deszyfrowanie po stronie Pythona,
+// więc najwyżej THUMB_CONCURRENCY naraz; generacja odrzuca odpowiedzi sprzed przerysowania.
+const THUMB_CONCURRENCY = 4;
+let _thumbGeneration = 0;
+let _thumbQueue = [];   // [{ card, gen }]
+let _thumbActive = 0;
 
-function setupLazyThumbnails(notes) {
+function setupLazyThumbnails() {
   if (_thumbObserver) {
     _thumbObserver.disconnect();
     _thumbObserver = null;
   }
+  _thumbQueue = [];
 
   const scrollRoot = document.getElementById("notes-grid");
   _thumbObserver = new IntersectionObserver(
@@ -775,9 +776,9 @@ function setupLazyThumbnails(notes) {
         if (!entry.isIntersecting) return;
         const card = entry.target;
         _thumbObserver.unobserve(card);
-        const idx = Number(card.dataset.idx);
-        loadOneThumbnail(notes[idx], idx);
+        _thumbQueue.push({ card, gen: _thumbGeneration });
       });
+      pumpThumbnails();
     },
     { root: scrollRoot, rootMargin: "400px 0px", threshold: 0.01 }
   );
@@ -787,14 +788,26 @@ function setupLazyThumbnails(notes) {
   });
 }
 
-async function loadOneThumbnail(note, idx) {
-  const imgEl = document.getElementById(`thumb-${idx}`);
-  if (!imgEl || !note) return;
+function pumpThumbnails() {
+  while (_thumbActive < THUMB_CONCURRENCY && _thumbQueue.length > 0) {
+    const job = _thumbQueue.shift();
+    if (job.gen !== _thumbGeneration || !job.card.isConnected) continue;
+    _thumbActive++;
+    loadOneThumbnail(job.card, job.gen).finally(() => {
+      _thumbActive--;
+      pumpThumbnails();
+    });
+  }
+}
+
+async function loadOneThumbnail(card, gen) {
+  // cel po data-filepath karty, nie po indeksie (indeksy powtarzają się między renderami)
+  const filepath = card.dataset.filepath;
   try {
-    const b64 = await callApi("get_note_thumbnail", note.filepath);
-    if (b64 && document.getElementById(`thumb-${idx}`)) {
-      imgEl.innerHTML = `<img src="data:image/png;base64,${b64}" alt="">`;
-    }
+    const b64 = await callApi("get_note_thumbnail", filepath);
+    if (!b64 || gen !== _thumbGeneration || !card.isConnected || card.dataset.filepath !== filepath) return;
+    const imgEl = card.querySelector(".thumb-img");
+    if (imgEl) imgEl.innerHTML = `<img src="data:image/png;base64,${b64}" alt="">`;
   } catch (e) {
     // pojedynczy błąd nie przerywa ładowania reszty
   }

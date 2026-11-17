@@ -26,6 +26,9 @@ let _viewerKeydownHandler = null; // do odpięcia przy ponownym wejściu w viewe
 // klawiaturą potrzebuje własnej flagi cyklu życia popupu (ten sam wzorzec
 // co _editorPopupOpen w editor.js).
 let _viewerPopupOpen = false;
+// G2: token żądania (starsza odpowiedź get_note nie nadpisze nowszej) + bieżący blob URL obrazu
+let _viewerLoadToken = 0;
+let _viewerImageUrl = null;
 const ZOOM_MIN = 0.15;
 const ZOOM_MAX = 10;
 const ZOOM_STEP = 1.25;
@@ -39,6 +42,8 @@ function openViewerPopup(folder, filepath) {
                        // panel plików potrzebują realnej przestrzeni
     onClose: () => {
       _viewerPopupOpen = false;
+      _viewerLoadToken++;
+      revokeViewerImage();
     },
     async render(container) {
       _viewerFiles = await callApi("collect_viewer_files", folder);
@@ -107,8 +112,22 @@ function renderFileList() {
   });
 }
 
+function revokeViewerImage() {
+  if (_viewerImageUrl) URL.revokeObjectURL(_viewerImageUrl);
+  _viewerImageUrl = null;
+}
+
+// base64 -> blob: URL; mniej pamięci niż data-URI w innerHTML, zwalniany przy zmianie notatki
+function base64ToObjectUrl(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return URL.createObjectURL(new Blob([bytes]));
+}
+
 async function loadCurrentNote() {
   if (_viewerEditMode) discardEdit();
+  const token = ++_viewerLoadToken;
   const filepath = _viewerFiles[_viewerIdx].filepath;
   const total = _viewerFiles.length;
 
@@ -120,23 +139,33 @@ async function loadCurrentNote() {
   try {
     note = await callApi("get_note", filepath);
   } catch (err) {
+    if (token !== _viewerLoadToken) return;
+    revokeViewerImage();
     document.getElementById("v-md-view").textContent = "Błąd odczytu: " + err;
     document.getElementById("v-image-viewport").innerHTML = "";
     document.getElementById("v-tags").innerHTML = "";
     return;
   }
+  if (token !== _viewerLoadToken) return; // w międzyczasie przełączono notatkę
 
   document.getElementById("v-title").textContent = note.title;
   const viewportEl = document.getElementById("v-image-viewport");
-  viewportEl.innerHTML = note.image_base64
-    ? `<img src="data:image/png;base64,${note.image_base64}" alt="" draggable="false">`
-    : `<span class="drop-hint">Brak obrazu</span>`;
+  revokeViewerImage();
+  viewportEl.innerHTML = "";
+  if (note.image_base64) {
+    _viewerImageUrl = base64ToObjectUrl(note.image_base64);
+    const img = document.createElement("img");
+    img.src = _viewerImageUrl;
+    img.alt = "";
+    img.draggable = false;
+    viewportEl.appendChild(img);
+  } else {
+    viewportEl.innerHTML = `<span class="drop-hint">Brak obrazu</span>`;
+  }
   resetZoomPan();
 
-
   _viewerCurrentText = note.text;
-  const html = await callApi("render_markdown", note.text);
-  document.getElementById("v-md-view").innerHTML = html;
+  document.getElementById("v-md-view").innerHTML = note.html; // P6: zsanityzowane po stronie Pythona
 
   document.getElementById("v-tags").innerHTML = note.tags
     .map((t) => `<span class="viewer-tag-chip">${escapeHtml(t)}</span>`)
@@ -174,11 +203,12 @@ function discardEdit() {
 async function saveInlineEdit() {
   const filepath = _viewerFiles[_viewerIdx].filepath;
   const newText = document.getElementById("v-md-editor").value;
-  const note = await callApi("get_note", filepath);
   try {
-    await callApi("save_note", note.folder, note.title, newText, note.tags, note.image_base64, filepath);
+    // P4: sam tekst — obraz zostaje po stronie Pythona, zamiast jechać mostem w obie strony
+    const res = await callApi("update_note_text", filepath, newText);
+    if (_viewerFiles[_viewerIdx].filepath !== filepath) return;
     _viewerCurrentText = newText;
-    document.getElementById("v-md-view").innerHTML = await callApi("render_markdown", newText);
+    document.getElementById("v-md-view").innerHTML = res.html;
     discardEdit();
   } catch (err) {
     alert("Błąd zapisu: " + err);

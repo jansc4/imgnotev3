@@ -33,7 +33,7 @@ function openContextMenu(event, items) {
     .map((item, i) =>
       item.separator
         ? `<div class="context-menu-sep"></div>`
-        : `<div class="context-menu-item${item.danger ? " context-menu-item-danger" : ""}" data-i="${i}">${item.label}</div>`
+        : `<div class="context-menu-item${item.danger ? " context-menu-item-danger" : ""}" data-i="${i}">${escapeHtml(item.label)}</div>`
     )
     .join("");
   document.body.appendChild(menu);

@@ -30,10 +30,6 @@
 let _popupStack = []; // [{ layerEl, onClose }] — [0] najstarsza, ostatnia = wierzchnia
 let _popupKeydownHandler = null;
 
-function _popupEscapeHtml(s) {
-  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
 function openPopup({ title, render, onClose, wide, fullscreen }) {
   const root = document.getElementById("popup-root");
   if (!root) return;
@@ -44,7 +40,7 @@ function openPopup({ title, render, onClose, wide, fullscreen }) {
   layer.innerHTML = `
     <div class="popup-box${boxClass}">
       <div class="popup-header">
-        <span class="popup-title">${_popupEscapeHtml(title || "")}</span>
+        <span class="popup-title">${escapeHtml(title || "")}</span>
         <button class="btn btn-icon popup-close-btn" title="Zamknij (Esc)">✕</button>
       </div>
       <div class="popup-body"></div>
